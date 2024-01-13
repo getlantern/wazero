@@ -214,6 +214,8 @@ type Module interface {
 	IsClosed() bool
 
 	internalapi.WazeroOnly
+
+	WATERExtendedModule // [WATER] We extend this interface to export more APIs, see w_ext.go
 }
 
 // Closer closes a resource.
