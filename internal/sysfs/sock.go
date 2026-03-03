@@ -3,6 +3,7 @@ package sysfs
 import (
 	"net"
 	"os"
+	"syscall"
 
 	experimentalsys "github.com/tetratelabs/wazero/experimental/sys"
 	"github.com/tetratelabs/wazero/internal/fsapi"
@@ -45,6 +46,8 @@ type tcpListenerFile struct {
 	tl       *net.TCPListener
 	closed   bool
 	nonblock bool
+	rawConn  syscall.RawConn // cached at construction to avoid per-call allocs
+	cachedFd uintptr         // cached at construction to avoid per-call allocs
 }
 
 // newTCPListenerFile is a constructor for a socketapi.TCPSock.
@@ -55,7 +58,12 @@ type tcpListenerFile struct {
 // that the underlying file descriptor is valid throughout
 // the duration of the syscall.
 func newDefaultTCPListenerFile(tl *net.TCPListener) socketapi.TCPSock {
-	return &tcpListenerFile{tl: tl}
+	f := &tcpListenerFile{tl: tl}
+	if rc, err := tl.SyscallConn(); err == nil {
+		f.rawConn = rc
+		rc.Control(func(fd uintptr) { f.cachedFd = fd })
+	}
+	return f
 }
 
 // Close implements the same method as documented on experimentalsys.File
@@ -92,11 +100,18 @@ type tcpConnFile struct {
 	// This ensures that reads and writes return experimentalsys.EAGAIN without blocking the caller.
 	nonblock bool
 	// closed is true when closed was called. This ensures proper experimentalsys.EBADF
-	closed bool
+	closed   bool
+	rawConn  syscall.RawConn // cached at construction to avoid per-call allocs
+	cachedFd uintptr         // cached at construction to avoid per-call allocs
 }
 
 func newTcpConn(tc *net.TCPConn) socketapi.TCPConn {
-	return &tcpConnFile{tc: tc}
+	f := &tcpConnFile{tc: tc}
+	if rc, err := tc.SyscallConn(); err == nil {
+		f.rawConn = rc
+		rc.Control(func(fd uintptr) { f.cachedFd = fd })
+	}
+	return f
 }
 
 // Read implements the same method as documented on experimentalsys.File
@@ -105,12 +120,21 @@ func (f *tcpConnFile) Read(buf []byte) (n int, errno experimentalsys.Errno) {
 		return 0, 0 // Short-circuit 0-len reads.
 	}
 	if nonBlockingFileReadSupported && f.IsNonblock() {
-		n, errno = syscallConnControl(f.tc, func(fd uintptr) (int, experimentalsys.Errno) {
-			n, err := readSocket(fd, buf)
-			errno = experimentalsys.UnwrapOSError(err)
-			errno = fileError(f, f.closed, errno)
-			return n, errno
-		})
+		if f.rawConn != nil {
+			if controlErr := f.rawConn.Control(func(fd uintptr) {
+				n, errno = readSocket(fd, buf)
+				errno = fileError(f, f.closed, errno)
+			}); errno == 0 {
+				errno = experimentalsys.UnwrapOSError(controlErr)
+			}
+		} else {
+			n, errno = syscallConnControl(f.tc, func(fd uintptr) (int, experimentalsys.Errno) {
+				n, err := readSocket(fd, buf)
+				errno = experimentalsys.UnwrapOSError(err)
+				errno = fileError(f, f.closed, errno)
+				return n, errno
+			})
+		}
 	} else {
 		n, errno = read(f.tc, buf)
 	}
@@ -124,6 +148,15 @@ func (f *tcpConnFile) Read(buf []byte) (n int, errno experimentalsys.Errno) {
 // Write implements the same method as documented on experimentalsys.File
 func (f *tcpConnFile) Write(buf []byte) (n int, errno experimentalsys.Errno) {
 	if nonBlockingFileWriteSupported && f.IsNonblock() {
+		if f.rawConn != nil {
+			if controlErr := f.rawConn.Control(func(fd uintptr) {
+				n, errno = writeSocket(fd, buf)
+				errno = fileError(f, f.closed, errno)
+			}); errno == 0 {
+				errno = experimentalsys.UnwrapOSError(controlErr)
+			}
+			return
+		}
 		return syscallConnControl(f.tc, func(fd uintptr) (int, experimentalsys.Errno) {
 			n, err := writeSocket(fd, buf)
 			errno = experimentalsys.UnwrapOSError(err)
@@ -144,6 +177,15 @@ func (f *tcpConnFile) Write(buf []byte) (n int, errno experimentalsys.Errno) {
 func (f *tcpConnFile) Recvfrom(p []byte, flags int) (n int, errno experimentalsys.Errno) {
 	if flags != MSG_PEEK {
 		errno = experimentalsys.EINVAL
+		return
+	}
+	if f.rawConn != nil {
+		if controlErr := f.rawConn.Control(func(fd uintptr) {
+			n, errno = recvfrom(fd, p, MSG_PEEK)
+			errno = fileError(f, f.closed, errno)
+		}); errno == 0 {
+			errno = experimentalsys.UnwrapOSError(controlErr)
+		}
 		return
 	}
 	return syscallConnControl(f.tc, func(fd uintptr) (int, experimentalsys.Errno) {
@@ -170,6 +212,14 @@ func (f *tcpConnFile) close() experimentalsys.Errno {
 // SetNonblock implements the same method as documented on fsapi.File
 func (f *tcpConnFile) SetNonblock(enabled bool) (errno experimentalsys.Errno) {
 	f.nonblock = enabled
+	if f.rawConn != nil {
+		if controlErr := f.rawConn.Control(func(fd uintptr) {
+			errno = setNonblockSocket(fd, enabled)
+		}); errno == 0 {
+			errno = experimentalsys.UnwrapOSError(controlErr)
+		}
+		return
+	}
 	_, errno = syscallConnControl(f.tc, func(fd uintptr) (int, experimentalsys.Errno) {
 		return 0, experimentalsys.UnwrapOSError(setNonblockSocket(fd, enabled))
 	})
