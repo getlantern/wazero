@@ -360,14 +360,18 @@ func (r *runtime) InstantiateModule(
 			continue
 		}
 		if _, err = start.Call(ctx); err != nil {
-			_ = mod.Close(ctx) // Don't leak the module on error.
-
 			if se, ok := err.(*sys.ExitError); ok {
 				if se.ExitCode() == 0 { // Don't err on success.
 					err = nil
+					// Don't close the module — it should remain
+					// usable for calling exported functions after
+					// _start returns (e.g., TinyGo 0.40+).
+				} else {
+					_ = mod.Close(ctx) // Don't leak the module on error.
 				}
 				return // Don't wrap an exit error
 			}
+			_ = mod.Close(ctx) // Don't leak the module on error.
 			err = fmt.Errorf("module[%s] function[%s] failed: %w", name, fn, err)
 			return
 		}

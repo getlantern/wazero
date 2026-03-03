@@ -29,8 +29,14 @@ var procExit = &wasm.HostFunc{
 func procExitFn(ctx context.Context, mod api.Module, params []uint64) {
 	exitCode := uint32(params[0])
 
-	// Ensure other callers see the exit code.
-	_ = mod.CloseWithExitCode(ctx, exitCode)
+	if exitCode != 0 {
+		// Only close the module on non-zero (error) exit codes.
+		// Exit code 0 means success — the module should remain usable
+		// so that exported functions can still be called after _start
+		// returns. This is needed for runtimes like TinyGo 0.40+ which
+		// call proc_exit(0) after main() completes.
+		_ = mod.CloseWithExitCode(ctx, exitCode)
+	}
 
 	// Prevent any code from executing after this function. For example, LLVM
 	// inserts unreachable instructions after calls to exit.
