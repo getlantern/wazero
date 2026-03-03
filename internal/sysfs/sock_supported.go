@@ -33,6 +33,14 @@ func (f *tcpListenerFile) Accept() (socketapi.TCPConn, experimentalsys.Errno) {
 // SetNonblock implements the same method as documented on fsapi.File
 func (f *tcpListenerFile) SetNonblock(enabled bool) (errno experimentalsys.Errno) {
 	f.nonblock = enabled
+	if f.rawConn != nil {
+		if controlErr := f.rawConn.Control(func(fd uintptr) {
+			errno = setNonblockSocket(fd, enabled)
+		}); errno == 0 {
+			errno = experimentalsys.UnwrapOSError(controlErr)
+		}
+		return
+	}
 	_, errno = syscallConnControl(f.tl, func(fd uintptr) (int, experimentalsys.Errno) {
 		return 0, setNonblockSocket(fd, enabled)
 	})
