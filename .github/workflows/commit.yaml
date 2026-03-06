@@ -165,7 +165,7 @@ jobs:
           go-version: "1.22"
       - uses: acifani/setup-tinygo@v2
         with:
-          tinygo-version: "0.31.2"
+          tinygo-version: "0.40.1"
       - run: tinygo build ./cmd/wazero
       - run: tinygo build -size short -target pico -stack-size=8kb ./cmd/wazero
 
@@ -181,7 +181,7 @@ jobs:
         # The version here is coupled to internal/integration_test/go.mod, but it
         # isn't always the same as sometimes the Go layer has a broken release.
         env:
-          WASMEDGE_VERSION: 0.12.1
+          WASMEDGE_VERSION: 0.16.1
 
       - uses: actions/checkout@v3
 
