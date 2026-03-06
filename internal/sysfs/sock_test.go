@@ -132,6 +132,60 @@ func TestTcpConnFile_Read(t *testing.T) {
 	require.Equal(t, "waze", string(bytes2))
 }
 
+func TestTcpConnFile_CachedRawConn(t *testing.T) {
+	listen, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listen.Close()
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", listen.Addr().String())
+	require.NoError(t, err)
+	tcp, err := net.DialTCP("tcp", nil, tcpAddr)
+	require.NoError(t, err)
+	defer tcp.Close() //nolint
+
+	conn, err := listen.Accept()
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Verify that newTcpConn caches rawConn and fd.
+	file := newTcpConn(tcp)
+	tcf := file.(*tcpConnFile)
+	require.NotNil(t, tcf.rawConn, "rawConn should be cached at construction")
+	require.NotEqual(t, uintptr(0), tcf.cachedFd, "cachedFd should be non-zero")
+
+	// Verify that the cached rawConn is usable for I/O by doing a
+	// nonblocking write (which uses the rawConn.Control fast path).
+	errno := file.(*tcpConnFile).SetNonblock(true)
+	require.Zero(t, errno)
+
+	_, errno = file.Write([]byte("hello"))
+	// EAGAIN is acceptable for nonblocking, but not a hard error.
+	if errno != 0 {
+		require.Equal(t, sys.EAGAIN, errno)
+	}
+}
+
+func TestTcpListenerFile_CachedRawConn(t *testing.T) {
+	listen, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listen.Close()
+
+	// Verify that newTCPListenerFile caches rawConn and fd.
+	lf := newTCPListenerFile(listen.(*net.TCPListener))
+	tlf := lf.(*tcpListenerFile)
+	require.NotNil(t, tlf.rawConn, "rawConn should be cached at construction")
+	require.NotEqual(t, uintptr(0), tlf.cachedFd, "cachedFd should be non-zero")
+
+	// Verify Fd() returns the cached value.
+	require.Equal(t, tlf.cachedFd, tlf.Fd())
+
+	// Verify the cached rawConn is usable by setting nonblock
+	// (which uses the rawConn.Control fast path).
+	errno := tlf.SetNonblock(true)
+	require.Zero(t, errno)
+	require.True(t, tlf.IsNonblock())
+}
+
 func TestTcpConnFile_Stat(t *testing.T) {
 	listen, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
