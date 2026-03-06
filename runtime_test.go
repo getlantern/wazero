@@ -548,6 +548,62 @@ func TestRuntime_InstantiateModule_ExitError(t *testing.T) {
 	}
 }
 
+// TestRuntime_InstantiateModule_ProcExitZero_ModuleUsable verifies that after
+// _start calls proc_exit(0), the module remains usable for calling other
+// exported functions. This is a regression test for TinyGo 0.40+ compatibility.
+func TestRuntime_InstantiateModule_ProcExitZero_ModuleUsable(t *testing.T) {
+	r := NewRuntime(testCtx)
+	defer r.Close(testCtx)
+
+	// Host function that simulates proc_exit(0): close with exit code 0
+	// and panic with ExitError, matching what WASI proc_exit does.
+	procExit := func(ctx context.Context, m api.Module) {
+		panic(sys.NewExitError(0))
+	}
+
+	env, err := r.NewHostModuleBuilder("env").
+		NewFunctionBuilder().WithFunc(procExit).Export("exit").
+		Instantiate(testCtx)
+	require.NoError(t, err)
+	defer env.Close(testCtx)
+
+	// Build a module with:
+	// - func 0: imported env.exit
+	// - func 1: _start (calls env.exit)
+	// - func 2: "get_value" (returns i32 const 42)
+	mod := &wasm.Module{
+		TypeSection: []wasm.FunctionType{
+			{},                                              // type 0: () -> ()
+			{Results: []wasm.ValueType{wasm.ValueTypeI32}},  // type 1: () -> i32
+		},
+		ImportSection: []wasm.Import{
+			{Module: "env", Name: "exit", Type: wasm.ExternTypeFunc, DescFunc: 0},
+		},
+		FunctionSection: []wasm.Index{0, 1}, // func 1 has type 0, func 2 has type 1
+		CodeSection: []wasm.Code{
+			{Body: []byte{wasm.OpcodeCall, 0, wasm.OpcodeEnd}},         // _start: call env.exit
+			{Body: []byte{wasm.OpcodeI32Const, 42, wasm.OpcodeEnd}},    // get_value: return 42
+		},
+		ExportSection: []wasm.Export{
+			{Name: "_start", Type: wasm.ExternTypeFunc, Index: 1},
+			{Name: "get_value", Type: wasm.ExternTypeFunc, Index: 2},
+		},
+	}
+
+	binary := binaryencoding.EncodeModule(mod)
+	m, err := r.InstantiateWithConfig(testCtx, binary,
+		NewModuleConfig().WithName("proc-exit-zero"))
+	require.NoError(t, err)
+	require.NotNil(t, m)
+
+	// The module should remain usable — call an exported function.
+	results, err := m.ExportedFunction("get_value").Call(testCtx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(42), results[0])
+
+	require.NoError(t, m.Close(testCtx))
+}
+
 func TestRuntime_CloseWithExitCode(t *testing.T) {
 	bin := binaryencoding.EncodeModule(&wasm.Module{
 		TypeSection:     []wasm.FunctionType{{}},

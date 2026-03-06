@@ -11,7 +11,9 @@ import (
 
 // procExit is the WASI function named ProcExitName that terminates the
 // execution of the module with an exit code. The only successful exit code is
-// zero.
+// zero. On exit code 0, the module is kept open so that exported functions
+// can still be called (needed for TinyGo 0.40+ which calls proc_exit(0)
+// after main() completes). On non-zero exit codes, the module is closed.
 //
 // # Parameters
 //

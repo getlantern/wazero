@@ -59,9 +59,19 @@ type tcpListenerFile struct {
 // the duration of the syscall.
 func newDefaultTCPListenerFile(tl *net.TCPListener) socketapi.TCPSock {
 	f := &tcpListenerFile{tl: tl}
-	if rc, err := tl.SyscallConn(); err == nil {
-		f.rawConn = rc
-		rc.Control(func(fd uintptr) { f.cachedFd = fd })
+	// Guard SyscallConn usage behind an interface assertion so that this
+	// remains a no-op on platforms/toolchains (e.g. TinyGo) where
+	// *net.TCPListener does not implement SyscallConn.
+	if sc, ok := interface{}(tl).(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		if rc, err := sc.SyscallConn(); err == nil {
+			var fd uintptr
+			if err := rc.Control(func(fd2 uintptr) { fd = fd2 }); err == nil {
+				f.rawConn = rc
+				f.cachedFd = fd
+			}
+		}
 	}
 	return f
 }
@@ -107,9 +117,19 @@ type tcpConnFile struct {
 
 func newTcpConn(tc *net.TCPConn) socketapi.TCPConn {
 	f := &tcpConnFile{tc: tc}
-	if rc, err := tc.SyscallConn(); err == nil {
-		f.rawConn = rc
-		rc.Control(func(fd uintptr) { f.cachedFd = fd })
+	// Guard SyscallConn usage behind an interface assertion so that this
+	// remains a no-op on platforms/toolchains (e.g. TinyGo) where
+	// *net.TCPConn does not implement SyscallConn.
+	if sc, ok := interface{}(tc).(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		if rc, err := sc.SyscallConn(); err == nil {
+			var fd uintptr
+			if err := rc.Control(func(fd2 uintptr) { fd = fd2 }); err == nil {
+				f.rawConn = rc
+				f.cachedFd = fd
+			}
+		}
 	}
 	return f
 }

@@ -363,9 +363,9 @@ func (r *runtime) InstantiateModule(
 			if se, ok := err.(*sys.ExitError); ok {
 				if se.ExitCode() == 0 { // Don't err on success.
 					err = nil
-					// Don't close the module — it should remain
-					// usable for calling exported functions after
-					// _start returns (e.g., TinyGo 0.40+).
+					// Don't close the module — it should remain usable
+					// for calling exported functions after a successful
+					// start function returns (e.g., _start in TinyGo 0.40+).
 				} else {
 					_ = mod.Close(ctx) // Don't leak the module on error.
 				}
