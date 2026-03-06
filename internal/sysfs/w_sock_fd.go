@@ -6,30 +6,12 @@
 
 package sysfs
 
-import (
-	experimentalsys "github.com/tetratelabs/wazero/experimental/sys"
-)
-
 // Fd implements the same method as documented on fsapi.File
 func (f *tcpListenerFile) Fd() uintptr {
-	var fd uintptr
-
-	syscallConnControl(f.tl, func(_fd uintptr) (int, experimentalsys.Errno) {
-		fd = _fd
-		return 0, 0
-	})
-
-	return fd
+	return f.cachedFd
 }
 
 // Fd implements the same method as documented on fsapi.File
 func (f *tcpConnFile) Fd() uintptr {
-	var fd uintptr
-
-	syscallConnControl(f.tc, func(_fd uintptr) (int, experimentalsys.Errno) {
-		fd = _fd
-		return 0, 0
-	})
-
-	return fd
+	return f.cachedFd
 }
