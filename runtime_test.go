@@ -573,16 +573,16 @@ func TestRuntime_InstantiateModule_ProcExitZero_ModuleUsable(t *testing.T) {
 	// - func 2: "get_value" (returns i32 const 42)
 	mod := &wasm.Module{
 		TypeSection: []wasm.FunctionType{
-			{},                                              // type 0: () -> ()
-			{Results: []wasm.ValueType{wasm.ValueTypeI32}},  // type 1: () -> i32
+			{}, // type 0: () -> ()
+			{Results: []wasm.ValueType{wasm.ValueTypeI32}}, // type 1: () -> i32
 		},
 		ImportSection: []wasm.Import{
 			{Module: "env", Name: "exit", Type: wasm.ExternTypeFunc, DescFunc: 0},
 		},
 		FunctionSection: []wasm.Index{0, 1}, // func 1 has type 0, func 2 has type 1
 		CodeSection: []wasm.Code{
-			{Body: []byte{wasm.OpcodeCall, 0, wasm.OpcodeEnd}},         // _start: call env.exit
-			{Body: []byte{wasm.OpcodeI32Const, 42, wasm.OpcodeEnd}},    // get_value: return 42
+			{Body: []byte{wasm.OpcodeCall, 0, wasm.OpcodeEnd}},      // _start: call env.exit
+			{Body: []byte{wasm.OpcodeI32Const, 42, wasm.OpcodeEnd}}, // get_value: return 42
 		},
 		ExportSection: []wasm.Export{
 			{Name: "_start", Type: wasm.ExternTypeFunc, Index: 1},
