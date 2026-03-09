@@ -36,18 +36,6 @@ type (
 	instructionKind byte
 )
 
-func asNop0(i *instruction) {
-	i.kind = nop0
-}
-
-func setNext(i, next *instruction) {
-	i.next = next
-}
-
-func setPrev(i, prev *instruction) {
-	i.prev = prev
-}
-
 // IsCall implements regalloc.Instr IsCall.
 func (i *instruction) IsCall() bool {
 	return i.kind == call
@@ -61,21 +49,6 @@ func (i *instruction) IsIndirectCall() bool {
 // IsReturn implements regalloc.Instr IsReturn.
 func (i *instruction) IsReturn() bool {
 	return i.kind == ret
-}
-
-// Next implements regalloc.Instr Next.
-func (i *instruction) Next() regalloc.Instr {
-	return i.next
-}
-
-// Prev implements regalloc.Instr Prev.
-func (i *instruction) Prev() regalloc.Instr {
-	return i.prev
-}
-
-// AddedBeforeRegAlloc implements regalloc.Instr AddedBeforeRegAlloc.
-func (i *instruction) AddedBeforeRegAlloc() bool {
-	return i.addedBeforeRegAlloc
 }
 
 type defKind byte
@@ -167,6 +140,8 @@ var defKinds = [numInstructionKinds]defKind{
 	atomicStore:          defKindNone,
 	dmb:                  defKindNone,
 	loadConstBlockArg:    defKindRD,
+	tailCall:             defKindCall,
+	tailCallInd:          defKindCall,
 }
 
 // Defs returns the list of regalloc.VReg that are defined by the instruction.
@@ -305,6 +280,8 @@ var useKinds = [numInstructionKinds]useKind{
 	atomicStore:          useKindRNRM,
 	loadConstBlockArg:    useKindNone,
 	dmb:                  useKindNone,
+	tailCall:             useKindCall,
+	tailCallInd:          useKindCallInd,
 }
 
 // Uses returns the list of regalloc.VReg that are used by the instruction.
@@ -1528,6 +1505,10 @@ func (i *instruction) String() (str string) {
 		str = fmt.Sprintf("%s %s, %s", m, formatVRegSized(i.rm.nr(), size), formatVRegSized(i.rn.nr(), 64))
 	case dmb:
 		str = "dmb"
+	case tailCall:
+		str = fmt.Sprintf("b %s", ssa.FuncRef(i.u1))
+	case tailCallInd:
+		str = fmt.Sprintf("b %s", formatVRegSized(i.rn.nr(), 64))
 	case udf:
 		str = "udf"
 	case emitSourceOffsetInfo:
@@ -1575,6 +1556,22 @@ func (i *instruction) asAtomicStore(rn, rt operand, size uint64) {
 
 func (i *instruction) asDMB() {
 	i.kind = dmb
+}
+
+func (i *instruction) asTailCall(ref ssa.FuncRef, abi *backend.FunctionABI) {
+	i.kind = tailCall
+	i.u1 = uint64(ref)
+	if abi != nil {
+		i.u2 = abi.ABIInfoAsUint64()
+	}
+}
+
+func (i *instruction) asTailCallIndirect(ptr regalloc.VReg, abi *backend.FunctionABI) {
+	i.kind = tailCallInd
+	i.rn = operandNR(ptr)
+	if abi != nil {
+		i.u2 = abi.ABIInfoAsUint64()
+	}
 }
 
 // TODO: delete unnecessary things.
@@ -1754,6 +1751,10 @@ const (
 	atomicStore
 	// dmb represents the data memory barrier instruction in inner-shareable (ish) mode.
 	dmb
+	// tailCall represents a tail call instruction.
+	tailCall
+	// tailCallInd represents a tail call indirect instruction.
+	tailCallInd
 	// UDF is the undefined instruction. For debugging only.
 	udf
 	// loadConstBlockArg represents a load of a constant block argument.

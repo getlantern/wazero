@@ -31,26 +31,28 @@ func Test_asImm12(t *testing.T) {
 func TestMachine_getOperand_NR(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
-		setup        func(*mockCompiler, ssa.Builder, *machine) (def *backend.SSAValueDefinition, mode extMode)
+		setup        func(*mockCompiler, ssa.Builder, *machine) (def backend.SSAValueDefinition, mode extMode)
 		exp          operand
 		instructions []string
 	}{
 		{
 			name: "block param - no extend",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI64)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeZeroExtend64
 			},
 			exp: operandNR(regToVReg(x4)),
 		},
 		{
 			name: "block param - zero extend",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI32)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeZeroExtend64
 			},
 			exp:          operandNR(regalloc.VReg(1).SetRegType(regalloc.RegTypeInt)),
@@ -58,10 +60,11 @@ func TestMachine_getOperand_NR(t *testing.T) {
 		},
 		{
 			name: "block param - sign extend",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI32)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeSignExtend64
 			},
 			exp:          operandNR(regalloc.VReg(1).SetRegType(regalloc.RegTypeInt)),
@@ -69,11 +72,11 @@ func TestMachine_getOperand_NR(t *testing.T) {
 		},
 		{
 			name: "const instr",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				instr := builder.AllocateInstruction()
 				instr.AsIconst32(0xf00000f)
 				builder.InsertInstruction(instr)
-				def = &backend.SSAValueDefinition{Instr: instr, N: 0}
+				def = backend.SSAValueDefinition{Instr: instr, V: instr.Return()}
 				ctx.vRegCounter = 99
 				return
 			},
@@ -85,7 +88,7 @@ func TestMachine_getOperand_NR(t *testing.T) {
 		},
 		{
 			name: "non const instr",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				c := builder.AllocateInstruction()
 				sig := &ssa.Signature{Results: []ssa.Type{ssa.TypeI64, ssa.TypeF64, ssa.TypeF64}}
 				builder.DeclareSignature(sig)
@@ -93,7 +96,7 @@ func TestMachine_getOperand_NR(t *testing.T) {
 				builder.InsertInstruction(c)
 				_, rs := c.Returns()
 				ctx.vRegMap[rs[1]] = regalloc.VReg(50)
-				def = &backend.SSAValueDefinition{Instr: c, N: 2}
+				def = backend.SSAValueDefinition{Instr: c, V: rs[1]}
 				return
 			},
 			exp: operandNR(regalloc.VReg(50)),
@@ -112,7 +115,7 @@ func TestMachine_getOperand_NR(t *testing.T) {
 func TestMachine_getOperand_SR_NR(t *testing.T) {
 	ishlWithConstAmount := func(
 		ctx *mockCompiler, builder ssa.Builder, m *machine,
-	) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+	) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 		blk := builder.CurrentBlock()
 		// (p1+p2) << amount
 		p1 := blk.AddParam(builder, ssa.TypeI64)
@@ -132,14 +135,16 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 		ishl.AsIshl(addResult, amountVal)
 		builder.InsertInstruction(ishl)
 
-		ctx.definitions[p1] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(1), BlockParamValue: p1}
-		ctx.definitions[p2] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(2), BlockParamValue: p2}
-		ctx.definitions[addResult] = &backend.SSAValueDefinition{Instr: add, N: 0}
-		ctx.definitions[amountVal] = &backend.SSAValueDefinition{Instr: amount, N: 0}
+		ctx.vRegMap[p1] = regalloc.VReg(1)
+		ctx.definitions[p1] = backend.SSAValueDefinition{V: p1}
+		ctx.vRegMap[p2] = regalloc.VReg(2)
+		ctx.definitions[p2] = backend.SSAValueDefinition{V: p2}
+		ctx.definitions[addResult] = backend.SSAValueDefinition{Instr: add, V: addResult}
+		ctx.definitions[amountVal] = backend.SSAValueDefinition{Instr: amount, V: amountVal}
 
 		ctx.vRegMap[addResult] = regalloc.VReg(1234)
 		ctx.vRegMap[ishl.Return()] = regalloc.VReg(10)
-		def = &backend.SSAValueDefinition{Instr: ishl, N: 0}
+		def = backend.SSAValueDefinition{Instr: ishl, V: ishl.Return()}
 		mode = extModeNone
 		verify = func(t *testing.T) {
 			require.True(t, ishl.Lowered())
@@ -150,23 +155,24 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
-		setup        func(*mockCompiler, ssa.Builder, *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T))
+		setup        func(*mockCompiler, ssa.Builder, *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T))
 		exp          operand
 		instructions []string
 	}{
 		{
 			name: "block param",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI64)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeNone, func(t *testing.T) {}
 			},
 			exp: operandNR(regToVReg(x4)),
 		},
 		{
 			name: "ishl but not const amount",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				blk := builder.CurrentBlock()
 				// (p1+p2) << p3
 				p1 := blk.AddParam(builder, ssa.TypeI64)
@@ -181,13 +187,16 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 				ishl.AsIshl(addResult, p3)
 				builder.InsertInstruction(ishl)
 
-				ctx.definitions[p1] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(1), BlockParamValue: p1}
-				ctx.definitions[p2] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(2), BlockParamValue: p2}
-				ctx.definitions[p3] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(3), BlockParamValue: p3}
-				ctx.definitions[addResult] = &backend.SSAValueDefinition{Instr: add, N: 0}
+				ctx.vRegMap[p1] = regalloc.VReg(1)
+				ctx.definitions[p1] = backend.SSAValueDefinition{V: p1}
+				ctx.vRegMap[p2] = regalloc.VReg(2)
+				ctx.definitions[p2] = backend.SSAValueDefinition{V: p2}
+				ctx.vRegMap[p3] = regalloc.VReg(3)
+				ctx.definitions[p3] = backend.SSAValueDefinition{V: p3}
+				ctx.definitions[addResult] = backend.SSAValueDefinition{Instr: add, V: addResult}
 				ctx.vRegMap[addResult] = regalloc.VReg(1234) // whatever is fine.
 				ctx.vRegMap[ishl.Return()] = regalloc.VReg(10)
-				def = &backend.SSAValueDefinition{Instr: ishl, N: 0}
+				def = backend.SSAValueDefinition{Instr: ishl, V: ishl.Return()}
 				return def, extModeNone, func(t *testing.T) {}
 			},
 			exp: operandNR(regalloc.VReg(10)),
@@ -201,7 +210,7 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 			name: "ishl with const amount with i32",
 			setup: func(
 				ctx *mockCompiler, builder ssa.Builder, m *machine,
-			) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				blk := builder.CurrentBlock()
 				// (p1+p2) << amount
 				p1 := blk.AddParam(builder, ssa.TypeI32)
@@ -221,14 +230,16 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 				ishl.AsIshl(addResult, amountVal)
 				builder.InsertInstruction(ishl)
 
-				ctx.definitions[p1] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(1), BlockParamValue: p1}
-				ctx.definitions[p2] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(2), BlockParamValue: p2}
-				ctx.definitions[addResult] = &backend.SSAValueDefinition{Instr: add, N: 0}
-				ctx.definitions[amountVal] = &backend.SSAValueDefinition{Instr: amount, N: 0}
+				ctx.vRegMap[p1] = regalloc.VReg(1)
+				ctx.definitions[p1] = backend.SSAValueDefinition{V: p1}
+				ctx.vRegMap[p2] = regalloc.VReg(2)
+				ctx.definitions[p2] = backend.SSAValueDefinition{V: p2}
+				ctx.definitions[addResult] = backend.SSAValueDefinition{Instr: add, V: addResult}
+				ctx.definitions[amountVal] = backend.SSAValueDefinition{Instr: amount, V: amountVal}
 
 				ctx.vRegMap[addResult] = regalloc.VReg(1234)
 				ctx.vRegMap[ishl.Return()] = regalloc.VReg(10)
-				def = &backend.SSAValueDefinition{Instr: ishl, N: 0}
+				def = backend.SSAValueDefinition{Instr: ishl}
 				mode = extModeNone
 				verify = func(t *testing.T) {
 					require.True(t, ishl.Lowered())
@@ -242,7 +253,7 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 			name: "ishl with const amount with const shift target",
 			setup: func(
 				ctx *mockCompiler, builder ssa.Builder, m *machine,
-			) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				const nextVReg = 100
 				ctx.vRegCounter = nextVReg - 1
 
@@ -254,11 +265,11 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 				ishl.AsIshl(target.Return(), amountVal)
 				builder.InsertInstruction(ishl)
 
-				ctx.definitions[targetVal] = &backend.SSAValueDefinition{Instr: target, N: 0}
-				ctx.definitions[amountVal] = &backend.SSAValueDefinition{Instr: amount, N: 0}
+				ctx.definitions[targetVal] = backend.SSAValueDefinition{Instr: target, V: targetVal}
+				ctx.definitions[amountVal] = backend.SSAValueDefinition{Instr: amount, V: amountVal}
 				ctx.vRegMap[targetVal] = regalloc.VReg(1234)
 				ctx.vRegMap[ishl.Return()] = regalloc.VReg(10)
-				def = &backend.SSAValueDefinition{Instr: ishl, N: 0}
+				def = backend.SSAValueDefinition{Instr: ishl}
 				mode = extModeNone
 				verify = func(t *testing.T) {
 					require.True(t, ishl.Lowered())
@@ -271,7 +282,7 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 		},
 		{
 			name: "ishl with const amount but group id is different",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				def, mode, _ = ishlWithConstAmount(ctx, builder, m)
 				ctx.currentGID = 1230
 				return
@@ -280,7 +291,7 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 		},
 		{
 			name: "ishl with const amount but ref count is larger than 1",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				def, mode, _ = ishlWithConstAmount(ctx, builder, m)
 				def.RefCount = 10
 				return
@@ -304,7 +315,7 @@ func TestMachine_getOperand_SR_NR(t *testing.T) {
 func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 	const nextVReg = 100
 	type testCase struct {
-		setup        func(*mockCompiler, ssa.Builder, *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T))
+		setup        func(*mockCompiler, ssa.Builder, *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T))
 		exp          operand
 		instructions []string
 	}
@@ -320,10 +331,11 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 
 	t.Run("block param", func(t *testing.T) {
 		runner(testCase{
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI64)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeZeroExtend64, func(t *testing.T) {}
 			},
 			exp: operandNR(regToVReg(x4)),
@@ -348,7 +360,7 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 			{from: 32, to: 64, signed: false, exp: operandER(regalloc.VReg(10), extendOpUXTW, 64)},
 		} {
 			runner(testCase{
-				setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+				setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 					blk := builder.CurrentBlock()
 					v := blk.AddParam(builder, ssa.TypeI64)
 					ext := builder.AllocateInstruction()
@@ -359,9 +371,9 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 					}
 					builder.InsertInstruction(ext)
 					extArg := ext.Arg()
-					ctx.vRegMap[ext.Arg()] = regalloc.VReg(10)
-					ctx.definitions[v] = &backend.SSAValueDefinition{BlkParamVReg: regalloc.VReg(10), BlockParamValue: extArg}
-					def = &backend.SSAValueDefinition{Instr: ext, N: 0}
+					ctx.vRegMap[extArg] = regalloc.VReg(10)
+					ctx.definitions[v] = backend.SSAValueDefinition{V: extArg}
+					def = backend.SSAValueDefinition{Instr: ext, V: ext.Return()}
 					return def, extModeNone, func(t *testing.T) {
 						require.True(t, ext.Lowered())
 					}
@@ -556,7 +568,7 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				runner(testCase{
-					setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
+					setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode, verify func(t *testing.T)) {
 						blk := builder.CurrentBlock()
 						v := blk.AddParam(builder, ssa.TypeI64)
 						ext := builder.AllocateInstruction()
@@ -571,16 +583,11 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 						ctx.vRegMap[ext.Return()] = resultVReg
 						if c.extArgConst {
 							iconst := builder.AllocateInstruction().AsIconst32(0xffff).Insert(builder)
-							m.compiler.(*mockCompiler).definitions[extArg] = &backend.SSAValueDefinition{
-								Instr: iconst,
-							}
+							m.compiler.(*mockCompiler).definitions[extArg] = backend.SSAValueDefinition{Instr: iconst, V: iconst.Return()}
 						} else {
-							m.compiler.(*mockCompiler).definitions[extArg] = &backend.SSAValueDefinition{
-								BlkParamVReg:    argVReg,
-								BlockParamValue: extArg,
-							}
+							m.compiler.(*mockCompiler).definitions[extArg] = backend.SSAValueDefinition{V: extArg}
 						}
-						def = &backend.SSAValueDefinition{Instr: ext, N: 0}
+						def = backend.SSAValueDefinition{Instr: ext}
 						return def, c.mode, func(t *testing.T) {
 							require.Equal(t, c.lowered, ext.Lowered())
 						}
@@ -596,27 +603,28 @@ func TestMachine_getOperand_ER_SR_NR(t *testing.T) {
 func TestMachine_getOperand_Imm12_ER_SR_NR(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
-		setup        func(*mockCompiler, ssa.Builder, *machine) (def *backend.SSAValueDefinition, mode extMode)
+		setup        func(*mockCompiler, ssa.Builder, *machine) (def backend.SSAValueDefinition, mode extMode)
 		exp          operand
 		instructions []string
 	}{
 		{
 			name: "block param",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI64)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeZeroExtend64
 			},
 			exp: operandNR(regToVReg(x4)),
 		},
 		{
 			name: "const imm 12 no shift",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(0xfff)
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},
@@ -624,11 +632,11 @@ func TestMachine_getOperand_Imm12_ER_SR_NR(t *testing.T) {
 		},
 		{
 			name: "const imm 12 with shift bit",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(0xabc_000)
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},
@@ -648,28 +656,29 @@ func TestMachine_getOperand_Imm12_ER_SR_NR(t *testing.T) {
 func TestMachine_getOperand_MaybeNegatedImm12_ER_SR_NR(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
-		setup        func(*mockCompiler, ssa.Builder, *machine) (def *backend.SSAValueDefinition, mode extMode)
+		setup        func(*mockCompiler, ssa.Builder, *machine) (def backend.SSAValueDefinition, mode extMode)
 		exp          operand
 		expNegated   bool
 		instructions []string
 	}{
 		{
 			name: "block param",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				blk := builder.CurrentBlock()
 				v := blk.AddParam(builder, ssa.TypeI64)
-				def = &backend.SSAValueDefinition{BlkParamVReg: regToVReg(x4), BlockParamValue: v}
+				ctx.vRegMap[v] = regToVReg(x4)
+				def = backend.SSAValueDefinition{V: v}
 				return def, extModeZeroExtend64
 			},
 			exp: operandNR(regToVReg(x4)),
 		},
 		{
 			name: "const imm 12 no shift",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(0xfff)
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},
@@ -677,12 +686,12 @@ func TestMachine_getOperand_MaybeNegatedImm12_ER_SR_NR(t *testing.T) {
 		},
 		{
 			name: "const negative imm 12 no shift",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				c := int32(-1)
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(uint32(c))
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst, V: cinst.Return()}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},
@@ -691,11 +700,11 @@ func TestMachine_getOperand_MaybeNegatedImm12_ER_SR_NR(t *testing.T) {
 		},
 		{
 			name: "const imm 12 with shift bit",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(0xabc_000)
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},
@@ -703,12 +712,12 @@ func TestMachine_getOperand_MaybeNegatedImm12_ER_SR_NR(t *testing.T) {
 		},
 		{
 			name: "const negated imm 12 with shift bit",
-			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def *backend.SSAValueDefinition, mode extMode) {
+			setup: func(ctx *mockCompiler, builder ssa.Builder, m *machine) (def backend.SSAValueDefinition, mode extMode) {
 				c := int32(-0xabc_000)
 				cinst := builder.AllocateInstruction()
 				cinst.AsIconst32(uint32(c))
 				builder.InsertInstruction(cinst)
-				def = &backend.SSAValueDefinition{Instr: cinst, N: 0}
+				def = backend.SSAValueDefinition{Instr: cinst, V: cinst.Return()}
 				ctx.currentGID = 0xff // const can be merged anytime, regardless of the group id.
 				return
 			},

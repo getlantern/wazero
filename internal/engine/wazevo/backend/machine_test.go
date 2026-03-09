@@ -11,7 +11,6 @@ import (
 // mockMachine implements Machine for testing.
 type mockMachine struct {
 	argResultInts, argResultFloats []regalloc.RealReg
-	startLoweringFunction          func(id ssa.BasicBlockID)
 	startBlock                     func(block ssa.BasicBlock)
 	lowerSingleBranch              func(b *ssa.Instruction)
 	lowerConditionalBranch         func(b *ssa.Instruction)
@@ -25,6 +24,8 @@ type mockMachine struct {
 	linkAdjacentBlocks             func(prev, next ssa.BasicBlock)
 }
 
+func (m mockMachine) StartLoweringFunction(maxBlockID ssa.BasicBlockID) { panic("implement me") }
+
 func (m mockMachine) CallTrampolineIslandInfo(_ int) (_, _ int, _ error) { panic("implement me") }
 
 func (m mockMachine) ArgsResultsRegs() (argResultInts, argResultFloats []regalloc.RealReg) {
@@ -36,8 +37,6 @@ func (m mockMachine) RegAlloc() { panic("implement me") }
 func (m mockMachine) LowerParams(params []ssa.Value) { panic("implement me") }
 
 func (m mockMachine) LowerReturns(returns []ssa.Value) { panic("implement me") }
-
-func (m mockMachine) ExecutableContext() ExecutableContext { panic("implement me") }
 
 func (m mockMachine) CompileEntryPreamble(signature *ssa.Signature) []byte {
 	panic("TODO")
@@ -56,7 +55,7 @@ func (m mockMachine) CompileGoFunctionTrampoline(wazevoapi.ExitCode, *ssa.Signat
 func (m mockMachine) Encode(context.Context) (err error) { return }
 
 // ResolveRelocations implements Machine.ResolveRelocations.
-func (m mockMachine) ResolveRelocations([]int, []byte, []RelocationInfo, []int) {}
+func (m mockMachine) ResolveRelocations([]int, int, []byte, []RelocationInfo, []int) {}
 
 // PostRegAlloc implements Machine.SetupPrologue.
 func (m mockMachine) PostRegAlloc() {}
@@ -72,11 +71,6 @@ func (m mockMachine) SetCurrentABI(*FunctionABI) {}
 
 // SetCompiler implements Machine.SetCompiler.
 func (m mockMachine) SetCompiler(Compiler) {}
-
-// StartLoweringFunction implements Machine.StartLoweringFunction.
-func (m mockMachine) StartLoweringFunction(id ssa.BasicBlockID) {
-	m.startLoweringFunction(id)
-}
 
 // StartBlock implements Machine.StartBlock.
 func (m mockMachine) StartBlock(block ssa.BasicBlock) {

@@ -99,8 +99,9 @@ func TestWriteFdNonblock(t *testing.T) {
 
 	// Create a buffer (the content is not relevant)
 	buf := make([]byte, 1024)
-	// Write to the file until the pipe buffer gets filled up.
-	numWrites := 100
+	// From `man 7 pipe`, the default maximum pipe size is 1MiB, so write
+	// more than that to the file until the pipe buffer gets filled up.
+	numWrites := 1111
 	for i := 0; i < numWrites; i++ {
 		_, e := writeFd(fd, buf)
 		if e != 0 {
@@ -116,6 +117,50 @@ func TestWriteFdNonblock(t *testing.T) {
 	t.Fatal("writeFd should return EAGAIN at some point")
 }
 
+func TestFileReopenFileUpdatesFD(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := path.Join(tmpDir, "file")
+
+	// Open the file twice. Closing the first file, frees its fd.
+	// Then reopening the second file will take over the first fd.
+	// If reopening the file doesn't update the fd, they won't match.
+	f0 := requireOpenFile(t, path, experimentalsys.O_RDWR|experimentalsys.O_CREAT, 0o600)
+	f1 := requireOpenFile(t, path, experimentalsys.O_RDWR, 0o600)
+	defer f1.Close()
+	f0.Close()
+
+	of, ok := f1.(*osFile)
+	require.True(t, ok)
+
+	require.EqualErrno(t, 0, of.reopen())
+	require.Equal(t, of.file.Fd(), of.fd)
+}
+
+func TestFileReopenFileChecksSameFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := path.Join(tmpDir, "file")
+
+	f := requireOpenFile(t, path, experimentalsys.O_RDWR|experimentalsys.O_CREAT, 0o600)
+	defer f.Close()
+
+	require.NoError(t, os.Remove(path))
+
+	of, ok := f.(*osFile)
+	require.True(t, ok)
+
+	// Path does not exist anymore.
+	require.EqualErrno(t, experimentalsys.ENOENT, of.reopen())
+	require.Equal(t, of.file.Fd(), of.fd)
+
+	tmp, err := os.Create(path)
+	require.NoError(t, err)
+	defer tmp.Close()
+
+	// Path exists, but is not the same file.
+	require.EqualErrno(t, experimentalsys.ENOENT, of.reopen())
+	require.Equal(t, of.file.Fd(), of.fd)
+}
+
 func TestFileSetAppend(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -124,6 +169,7 @@ func TestFileSetAppend(t *testing.T) {
 
 	// Open without APPEND.
 	f, errno := OpenOSFile(fPath, experimentalsys.O_RDWR, 0o600)
+	defer f.Close()
 	require.EqualErrno(t, 0, errno)
 	require.False(t, f.IsAppend())
 
@@ -952,25 +998,6 @@ func TestFileTruncate(t *testing.T) {
 
 		errno := f.Truncate(-1)
 		require.EqualErrno(t, experimentalsys.EINVAL, errno)
-	})
-}
-
-func TestFileUtimens(t *testing.T) {
-	switch runtime.GOOS {
-	case "linux", "darwin": // supported
-	case "freebsd": // TODO: support freebsd w/o CGO
-	case "windows":
-	default: // expect ENOSYS and callers need to fall back to Utimens
-		t.Skip("unsupported GOOS", runtime.GOOS)
-	}
-
-	testUtimens(t, true)
-
-	testEBADFIfFileClosed(t, func(f experimentalsys.File) experimentalsys.Errno {
-		return f.Utimens(experimentalsys.UTIME_OMIT, experimentalsys.UTIME_OMIT)
-	})
-	testEBADFIfDirClosed(t, func(d experimentalsys.File) experimentalsys.Errno {
-		return d.Utimens(experimentalsys.UTIME_OMIT, experimentalsys.UTIME_OMIT)
 	})
 }
 

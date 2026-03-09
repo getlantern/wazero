@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,6 +38,11 @@ func readMemArg(pc uint64, body []byte) (align, offset uint32, read uint64, err 
 	align, num, err := leb128.LoadUint32(body[pc:])
 	if err != nil {
 		err = fmt.Errorf("read memory align: %v", err)
+		return
+	}
+	if align >= 32 {
+		// Prevent 1<<align uint32 overflow.
+		err = fmt.Errorf("invalid memory alignment")
 		return
 	}
 	read += num
@@ -451,14 +457,14 @@ func (m *Module) validateFunctionWithMaxStackValues(
 				return fmt.Errorf("read immediate: %w", err)
 			}
 
-			list := make([]uint32, nl)
+			sts.ls = sts.ls[:0]
 			for i := uint32(0); i < nl; i++ {
 				l, n, err := leb128.DecodeUint32(br)
 				if err != nil {
 					return fmt.Errorf("read immediate: %w", err)
 				}
 				num += n
-				list[i] = l
+				sts.ls = append(sts.ls, l)
 			}
 			ln, n, err := leb128.DecodeUint32(br)
 			if err != nil {
@@ -480,11 +486,9 @@ func (m *Module) validateFunctionWithMaxStackValues(
 			// function type might result in invalid value types if the block is the outermost label
 			// which equals the function's type.
 			if lnLabel.op != OpcodeLoop { // Loop operation doesn't require results since the continuation is the beginning of the loop.
-				defaultLabelType = make([]ValueType, len(lnLabel.blockType.Results))
-				copy(defaultLabelType, lnLabel.blockType.Results)
+				defaultLabelType = slices.Clone(lnLabel.blockType.Results)
 			} else {
-				defaultLabelType = make([]ValueType, len(lnLabel.blockType.Params))
-				copy(defaultLabelType, lnLabel.blockType.Params)
+				defaultLabelType = slices.Clone(lnLabel.blockType.Params)
 			}
 
 			if enabledFeatures.IsEnabled(api.CoreFeatureReferenceTypes) {
@@ -511,7 +515,7 @@ func (m *Module) validateFunctionWithMaxStackValues(
 				}
 			}
 
-			for _, l := range list {
+			for _, l := range sts.ls {
 				if int(l) >= len(controlBlockStack.stack) {
 					return fmt.Errorf("invalid l param given for %s", OpcodeBrTableName)
 				}
@@ -534,7 +538,7 @@ func (m *Module) validateFunctionWithMaxStackValues(
 
 			// br_table instruction is stack-polymorphic.
 			valueTypeStack.unreachable()
-		} else if op == OpcodeCall {
+		} else if op == OpcodeCall || op == OpcodeTailCallReturnCall {
 			pc++
 			index, num, err := leb128.LoadUint32(body[pc:])
 			if err != nil {
@@ -544,16 +548,35 @@ func (m *Module) validateFunctionWithMaxStackValues(
 			if int(index) >= len(functions) {
 				return fmt.Errorf("invalid function index")
 			}
+
+			var opcodeName string
+			if op == OpcodeCall {
+				opcodeName = OpcodeCallName
+			} else {
+				opcodeName = OpcodeTailCallReturnCallName
+			}
+
 			funcType := &m.TypeSection[functions[index]]
 			for i := 0; i < len(funcType.Params); i++ {
 				if err := valueTypeStack.popAndVerifyType(funcType.Params[len(funcType.Params)-1-i]); err != nil {
-					return fmt.Errorf("type mismatch on %s operation param type: %v", OpcodeCallName, err)
+					return fmt.Errorf("type mismatch on %s operation param type: %v", opcodeName, err)
 				}
 			}
 			for _, exp := range funcType.Results {
 				valueTypeStack.push(exp)
 			}
-		} else if op == OpcodeCallIndirect {
+			if op == OpcodeTailCallReturnCall {
+				if err := enabledFeatures.RequireEnabled(experimental.CoreFeaturesTailCall); err != nil {
+					return fmt.Errorf("%s invalid as %v", OpcodeTailCallReturnCallName, err)
+				}
+				// Same formatting as OpcodeEnd on the outer-most block
+				if err := valueTypeStack.requireStackValues(false, "", functionType.Results, false); err != nil {
+					return err
+				}
+				// behaves as a jump.
+				valueTypeStack.unreachable()
+			}
+		} else if op == OpcodeCallIndirect || op == OpcodeTailCallReturnCallIndirect {
 			pc++
 			typeIndex, num, err := leb128.LoadUint32(body[pc:])
 			if err != nil {
@@ -561,8 +584,15 @@ func (m *Module) validateFunctionWithMaxStackValues(
 			}
 			pc += num
 
+			var opcodeName string
+			if op == OpcodeCallIndirect {
+				opcodeName = OpcodeCallIndirectName
+			} else {
+				opcodeName = OpcodeTailCallReturnCallIndirectName
+			}
+
 			if int(typeIndex) >= len(m.TypeSection) {
-				return fmt.Errorf("invalid type index at %s: %d", OpcodeCallIndirectName, typeIndex)
+				return fmt.Errorf("invalid type index at %s: %d", opcodeName, typeIndex)
 			}
 
 			tableIndex, num, err := leb128.LoadUint32(body[pc:])
@@ -582,20 +612,32 @@ func (m *Module) validateFunctionWithMaxStackValues(
 
 			table := tables[tableIndex]
 			if table.Type != RefTypeFuncref {
-				return fmt.Errorf("table is not funcref type but was %s for %s", RefTypeName(table.Type), OpcodeCallIndirectName)
+				return fmt.Errorf("table is not funcref type but was %s for %s", RefTypeName(table.Type), opcodeName)
 			}
 
 			if err = valueTypeStack.popAndVerifyType(ValueTypeI32); err != nil {
-				return fmt.Errorf("cannot pop the offset in table for %s", OpcodeCallIndirectName)
+				return fmt.Errorf("cannot pop the offset in table for %s", opcodeName)
 			}
 			funcType := &m.TypeSection[typeIndex]
 			for i := 0; i < len(funcType.Params); i++ {
 				if err = valueTypeStack.popAndVerifyType(funcType.Params[len(funcType.Params)-1-i]); err != nil {
-					return fmt.Errorf("type mismatch on %s operation input type", OpcodeCallIndirectName)
+					return fmt.Errorf("type mismatch on %s operation input type", opcodeName)
 				}
 			}
 			for _, exp := range funcType.Results {
 				valueTypeStack.push(exp)
+			}
+
+			if op == OpcodeTailCallReturnCallIndirect {
+				if err := enabledFeatures.RequireEnabled(experimental.CoreFeaturesTailCall); err != nil {
+					return fmt.Errorf("%s invalid as %v", OpcodeTailCallReturnCallIndirectName, err)
+				}
+				// Same formatting as OpcodeEnd on the outer-most block
+				if err := valueTypeStack.requireStackValues(false, "", functionType.Results, false); err != nil {
+					return err
+				}
+				// behaves as a jump.
+				valueTypeStack.unreachable()
 			}
 		} else if OpcodeI32Eqz <= op && op <= OpcodeI64Extend32S {
 			switch op {
@@ -2003,6 +2045,8 @@ var vecSplatValueTypes = [...]ValueType{
 type stacks struct {
 	vs valueTypeStack
 	cs controlBlockStack
+	// ls is the label slice that is reused for each br_table instruction.
+	ls []uint32
 }
 
 func (sts *stacks) reset(functionType *FunctionType) {
@@ -2012,6 +2056,7 @@ func (sts *stacks) reset(functionType *FunctionType) {
 	sts.vs.maximumStackPointer = 0
 	sts.cs.stack = sts.cs.stack[:0]
 	sts.cs.stack = append(sts.cs.stack, controlBlock{blockType: functionType})
+	sts.ls = sts.ls[:0]
 }
 
 type controlBlockStack struct {

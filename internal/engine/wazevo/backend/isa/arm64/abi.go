@@ -7,7 +7,7 @@ import (
 )
 
 // References:
-// * https://github.com/golang/go/blob/49d42128fd8594c172162961ead19ac95e247d24/src/cmd/compile/abi-internal.md#arm64-architecture
+// * https://github.com/golang/go/blob/go1.24.0/src/cmd/compile/abi-internal.md#arm64-architecture
 // * https://developer.arm.com/documentation/102374/0101/Procedure-Call-Standard
 
 var (
@@ -182,9 +182,9 @@ func (m *machine) LowerReturns(rets []ssa.Value) {
 
 // callerGenVRegToFunctionArg is the opposite of GenFunctionArgToVReg, which is used to generate the
 // caller side of the function call.
-func (m *machine) callerGenVRegToFunctionArg(a *backend.FunctionABI, argIndex int, reg regalloc.VReg, def *backend.SSAValueDefinition, slotBegin int64) {
+func (m *machine) callerGenVRegToFunctionArg(a *backend.FunctionABI, argIndex int, reg regalloc.VReg, def backend.SSAValueDefinition, slotBegin int64) {
 	arg := &a.Args[argIndex]
-	if def != nil && def.IsFromInstr() {
+	if def.IsFromInstr() {
 		// Constant instructions are inlined.
 		if inst := def.Instr; inst.Constant() {
 			val := inst.Return()
@@ -228,10 +228,9 @@ func (m *machine) callerGenFunctionReturnVReg(a *backend.FunctionABI, retIndex i
 }
 
 func (m *machine) resolveAddressModeForOffsetAndInsert(cur *instruction, offset int64, dstBits byte, rn regalloc.VReg, allowTmpRegUse bool) (*instruction, *addressMode) {
-	exct := m.executableContext
-	exct.PendingInstructions = exct.PendingInstructions[:0]
+	m.pendingInstructions = m.pendingInstructions[:0]
 	mode := m.resolveAddressModeForOffset(offset, dstBits, rn, allowTmpRegUse)
-	for _, instr := range exct.PendingInstructions {
+	for _, instr := range m.pendingInstructions {
 		cur = linkInstr(cur, instr)
 	}
 	return cur, mode
@@ -262,6 +261,23 @@ func (m *machine) resolveAddressModeForOffset(offset int64, dstBits byte, rn reg
 
 func (m *machine) lowerCall(si *ssa.Instruction) {
 	isDirectCall := si.Opcode() == ssa.OpcodeCall
+	indirectCalleePtr, directCallee, calleeABI, stackSlotSize := m.prepareCall(si, isDirectCall)
+
+	if isDirectCall {
+		call := m.allocateInstr()
+		call.asCall(directCallee, calleeABI)
+		m.insert(call)
+	} else {
+		ptr := m.compiler.VRegOf(indirectCalleePtr)
+		callInd := m.allocateInstr()
+		callInd.asCallIndirect(ptr, calleeABI)
+		m.insert(callInd)
+	}
+
+	m.insertReturns(si, calleeABI, stackSlotSize)
+}
+
+func (m *machine) prepareCall(si *ssa.Instruction, isDirectCall bool) (ssa.Value, ssa.FuncRef, *backend.FunctionABI, int64) {
 	var indirectCalleePtr ssa.Value
 	var directCallee ssa.FuncRef
 	var sigID ssa.SignatureID
@@ -283,18 +299,10 @@ func (m *machine) lowerCall(si *ssa.Instruction) {
 		def := m.compiler.ValueDefinition(arg)
 		m.callerGenVRegToFunctionArg(calleeABI, i, reg, def, stackSlotSize)
 	}
+	return indirectCalleePtr, directCallee, calleeABI, stackSlotSize
+}
 
-	if isDirectCall {
-		call := m.allocateInstr()
-		call.asCall(directCallee, calleeABI)
-		m.insert(call)
-	} else {
-		ptr := m.compiler.VRegOf(indirectCalleePtr)
-		callInd := m.allocateInstr()
-		callInd.asCallIndirect(ptr, calleeABI)
-		m.insert(callInd)
-	}
-
+func (m *machine) insertReturns(si *ssa.Instruction, calleeABI *backend.FunctionABI, stackSlotSize int64) {
 	var index int
 	r1, rs := si.Returns()
 	if r1.Valid() {
@@ -306,6 +314,40 @@ func (m *machine) lowerCall(si *ssa.Instruction) {
 		m.callerGenFunctionReturnVReg(calleeABI, index, m.compiler.VRegOf(r), stackSlotSize)
 		index++
 	}
+}
+
+func (m *machine) lowerTailCall(si *ssa.Instruction) {
+	isDirectCall := si.Opcode() == ssa.OpcodeTailCallReturnCall
+	indirectCalleePtr, directCallee, calleeABI, stackSlotSize := m.prepareCall(si, isDirectCall)
+
+	// We currently support tail calls only when the args are passed via registers
+	// otherwise we fall back to a plain call.
+	// For details, see internal/engine/RATIONALE.md
+	isAllRegs := stackSlotSize == 0
+
+	switch {
+	case isDirectCall && isAllRegs:
+		tailJump := m.allocateInstr()
+		tailJump.asTailCall(directCallee, calleeABI)
+		m.insert(tailJump)
+	case !isDirectCall && isAllRegs:
+		ptr := m.compiler.VRegOf(indirectCalleePtr)
+		callInd := m.allocateInstr()
+		callInd.asTailCallIndirect(ptr, calleeABI)
+		m.insert(callInd)
+	case isDirectCall && !isAllRegs:
+		tailJump := m.allocateInstr()
+		tailJump.asCall(directCallee, calleeABI)
+		m.insert(tailJump)
+	case !isDirectCall && !isAllRegs:
+		ptr := m.compiler.VRegOf(indirectCalleePtr)
+		callInd := m.allocateInstr()
+		callInd.asCallIndirect(ptr, calleeABI)
+		m.insert(callInd)
+	}
+
+	// If this is a proper tail call, returns will be cleared in the postRegAlloc phase.
+	m.insertReturns(si, calleeABI, stackSlotSize)
 }
 
 func (m *machine) insertAddOrSubStackPointer(rd regalloc.VReg, diff int64, add bool) {

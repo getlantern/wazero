@@ -24,7 +24,7 @@ type mockCompiler struct {
 	currentGID  ssa.InstructionGroupID
 	vRegCounter int
 	vRegMap     map[ssa.Value]regalloc.VReg
-	definitions map[ssa.Value]*backend.SSAValueDefinition
+	definitions map[ssa.Value]backend.SSAValueDefinition
 	sigs        map[ssa.SignatureID]*ssa.Signature
 	typeOf      map[regalloc.VRegID]ssa.Type
 	relocs      []backend.RelocationInfo
@@ -46,7 +46,7 @@ func (m *mockCompiler) SourceOffsetInfo() []backend.SourceOffsetInfo { return ni
 
 func (m *mockCompiler) AddSourceOffsetInfo(int64, ssa.SourceOffset) {}
 
-func (m *mockCompiler) AddRelocationInfo(funcRef ssa.FuncRef) {
+func (m *mockCompiler) AddRelocationInfo(funcRef ssa.FuncRef, isTailCall bool) {
 	m.relocs = append(m.relocs, backend.RelocationInfo{FuncRef: funcRef, Offset: int64(len(m.buf))})
 }
 
@@ -76,7 +76,7 @@ func (m *mockCompiler) Init()                                {}
 func newMockCompilationContext() *mockCompiler { //nolint
 	return &mockCompiler{
 		vRegMap:     make(map[ssa.Value]regalloc.VReg),
-		definitions: make(map[ssa.Value]*backend.SSAValueDefinition),
+		definitions: make(map[ssa.Value]backend.SSAValueDefinition),
 		typeOf:      map[regalloc.VRegID]ssa.Type{},
 	}
 }
@@ -96,10 +96,10 @@ func (m *mockCompiler) AllocateVReg(typ ssa.Type) regalloc.VReg {
 }
 
 // ValueDefinition implements backend.Compiler.
-func (m *mockCompiler) ValueDefinition(value ssa.Value) *backend.SSAValueDefinition {
+func (m *mockCompiler) ValueDefinition(value ssa.Value) backend.SSAValueDefinition {
 	definition, exists := m.definitions[value]
 	if !exists {
-		return nil
+		return backend.SSAValueDefinition{V: value}
 	}
 	return definition
 }
@@ -114,7 +114,7 @@ func (m *mockCompiler) VRegOf(value ssa.Value) regalloc.VReg {
 }
 
 // MatchInstr implements backend.Compiler.
-func (m *mockCompiler) MatchInstr(def *backend.SSAValueDefinition, opcode ssa.Opcode) bool {
+func (m *mockCompiler) MatchInstr(def backend.SSAValueDefinition, opcode ssa.Opcode) bool {
 	instr := def.Instr
 	return def.IsFromInstr() &&
 		instr.Opcode() == opcode &&
@@ -123,7 +123,7 @@ func (m *mockCompiler) MatchInstr(def *backend.SSAValueDefinition, opcode ssa.Op
 }
 
 // MatchInstrOneOf implements backend.Compiler.
-func (m *mockCompiler) MatchInstrOneOf(def *backend.SSAValueDefinition, opcodes []ssa.Opcode) ssa.Opcode {
+func (m *mockCompiler) MatchInstrOneOf(def backend.SSAValueDefinition, opcodes []ssa.Opcode) ssa.Opcode {
 	for _, opcode := range opcodes {
 		if m.MatchInstr(def, opcode) {
 			return opcode
@@ -138,9 +138,9 @@ func (m *mockCompiler) Compile(context.Context) (_ []byte, _ []backend.Relocatio
 }
 
 func formatEmittedInstructionsInCurrentBlock(m *machine) string {
-	m.ectx.FlushPendingInstructions()
+	m.FlushPendingInstructions()
 	var strs []string
-	for cur := m.ectx.PerBlockHead; cur != nil; cur = cur.next {
+	for cur := m.perBlockHead; cur != nil; cur = cur.next {
 		strs = append(strs, cur.String())
 	}
 	return strings.Join(strs, "\n")

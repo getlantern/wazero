@@ -14,7 +14,7 @@ type WATERExtendedCompiledModule interface {
 
 // Implements WATERExtendedCompiledModule.
 func (c *compiledModule) AllExports() map[string]api.ExternType {
-	var ret = make(map[string]api.ExternType)
+	ret := make(map[string]api.ExternType)
 	for name, f := range c.module.Exports {
 		if f != nil {
 			ret[name] = f.Type
@@ -25,7 +25,7 @@ func (c *compiledModule) AllExports() map[string]api.ExternType {
 
 // Implements WATERExtendedCompiledModule.
 func (c *compiledModule) AllImports() map[string]map[string]api.ExternType {
-	var ret = make(map[string]map[string]api.ExternType)
+	ret := make(map[string]map[string]api.ExternType)
 	for module, imports := range c.module.ImportPerModule {
 		if len(imports) == 0 {
 			continue

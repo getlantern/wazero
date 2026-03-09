@@ -9,18 +9,34 @@ import (
 	"github.com/tetratelabs/wazero/internal/testing/require"
 )
 
+type (
+	_allocator = Allocator[*mockInstr, *mockBlock, *mockFunction]
+	_state     = state[*mockInstr, *mockBlock, *mockFunction]
+	_vrState   = vrState[*mockInstr, *mockBlock, *mockFunction]
+)
+
+var (
+	_newAllocator = NewAllocator[*mockInstr, *mockBlock, *mockFunction]
+	_resetVrState = resetVrState[*mockInstr, *mockBlock, *mockFunction]
+)
+
 func TestAllocator_livenessAnalysis(t *testing.T) {
 	const realRegID, realRegID2 = 50, 100
 	realReg, realReg2 := FromRealReg(realRegID, RegTypeInt), FromRealReg(realRegID2, RegTypeInt)
 	phiVReg := VReg(12345).SetRegType(RegTypeInt)
+
+	type exp struct {
+		liveIns []VRegID
+	}
+
 	for _, tc := range []struct {
 		name  string
-		setup func() Function
-		exp   map[int]*blockState
+		setup func() *mockFunction
+		exps  map[int]*exp
 	}{
 		{
 			name: "single block",
-			setup: func() Function {
+			setup: func() *mockFunction {
 				return newMockFunction(
 					newMockBlock(0,
 						newMockInstr().def(1),
@@ -28,13 +44,13 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 					).entry(),
 				)
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 			},
 		},
 		{
 			name: "single block with real reg",
-			setup: func() Function {
+			setup: func() *mockFunction {
 				realVReg := FromRealReg(10, RegTypeInt)
 				param := VReg(1)
 				ret := VReg(2)
@@ -46,14 +62,14 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				blk.blockParam(param)
 				return newMockFunction(blk)
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 			},
 		},
 		{
 			name: "straight",
 			// b0 -> b1 -> b2
-			setup: func() Function {
+			setup: func() *mockFunction {
 				b0 := newMockBlock(0,
 					newMockInstr().def(1000, 1, 2),
 					newMockInstr().use(1000),
@@ -71,7 +87,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				b1.addPred(b0)
 				return newMockFunction(b0, b1, b2)
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 				1: {
 					liveIns: []VRegID{3},
@@ -86,7 +102,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 			// 1   2
 			// \ /
 			//  3
-			setup: func() Function {
+			setup: func() *mockFunction {
 				b0 := newMockBlock(0,
 					newMockInstr().def(1000),
 					newMockInstr().def(1),
@@ -112,7 +128,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				b2.addPred(b0)
 				return newMockFunction(b0, b1, b2, b3)
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 				1: {liveIns: []VRegID{1000, 1}},
 				2: {
@@ -133,7 +149,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 			// 2   3
 			//  \ /
 			//   4  use v5 (phi node) defined at both 1 and 3.
-			setup: func() Function {
+			setup: func() *mockFunction {
 				b0 := newMockBlock(0,
 					newMockInstr().def(1000, 2000, 3000),
 				).entry()
@@ -154,7 +170,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				b1.addPred(b0)
 				return newMockFunction(b0, b1, b2, b3, b4)
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 				1: {
 					liveIns: []VRegID{2000, 3000},
@@ -177,7 +193,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 			//      ^    |
 			//      |    v
 			//      4 <- 3 -> 5
-			setup: func() Function {
+			setup: func() *mockFunction {
 				b0 := newMockBlock(0,
 					newMockInstr().def(1),
 					newMockInstr().def(phiVReg).use(1),
@@ -212,7 +228,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				f.loopNestingForestRoots(b1)
 				return f
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {
 					liveIns: []VRegID{},
 				},
@@ -233,7 +249,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 		},
 		{
 			name: "multiple pass alive",
-			setup: func() Function {
+			setup: func() *mockFunction {
 				v := VReg(9999)
 				b0 := newMockBlock(0, newMockInstr().def(v)).entry()
 
@@ -253,7 +269,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				f.loopNestingForestRoots(b2)
 				return f
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {},
 				1: {
 					liveIns: []VRegID{9999},
@@ -280,7 +296,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 			//      ^    |
 			//      +----+
 			name: "Fig. 9.2 in paper",
-			setup: func() Function {
+			setup: func() *mockFunction {
 				b0 := newMockBlock(0,
 					newMockInstr().def(99999),
 					newMockInstr().def(phiVReg).use(111).asCopy(),
@@ -303,7 +319,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 				f.loopNestingForestRoots(b1)
 				return f
 			},
-			exp: map[int]*blockState{
+			exps: map[int]*exp{
 				0: {
 					liveIns: []VRegID{111},
 				},
@@ -323,7 +339,7 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.setup()
-			a := NewAllocator(&RegisterInfo{
+			a := _newAllocator(&RegisterInfo{
 				RealRegName: func(r RealReg) string {
 					return fmt.Sprintf("r%d", r)
 				},
@@ -335,17 +351,21 @@ func TestAllocator_livenessAnalysis(t *testing.T) {
 					continue
 				}
 				t.Run(fmt.Sprintf("block_id=%d", blockID), func(t *testing.T) {
-					exp := tc.exp[blockID]
+					exp := tc.exps[blockID]
 					if len(exp.liveIns) == 0 {
 						require.Nil(t, actual.liveIns, "live ins")
 					} else {
-						sort.Slice(actual.liveIns, func(i, j int) bool {
-							return actual.liveIns[i] < actual.liveIns[j]
+						var actuals []VRegID
+						for _, s := range actual.liveIns {
+							actuals = append(actuals, s.v.ID())
+						}
+						sort.Slice(actuals, func(i, j int) bool {
+							return actuals[i] < actuals[j]
 						})
 						sort.Slice(exp.liveIns, func(i, j int) bool {
 							return exp.liveIns[i] < exp.liveIns[j]
 						})
-						require.Equal(t, exp.liveIns, actual.liveIns, "live ins")
+						require.Equal(t, exp.liveIns, actuals, "live ins")
 					}
 				})
 			}
@@ -360,26 +380,29 @@ func TestAllocator_livenessAnalysis_copy(t *testing.T) {
 			newMockInstr().use(1).def(2).asCopy(),
 		).entry(),
 	)
-	a := NewAllocator(&RegisterInfo{})
+	a := _newAllocator(&RegisterInfo{})
 	a.livenessAnalysis(f)
 }
 
 func Test_findOrSpillAllocatable_prefersSpill(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		s := &state{regsInUse: newRegInUseSet()}
-		s.regsInUse.add(RealReg(1), VReg(2222222))
-		got := s.findOrSpillAllocatable(&Allocator{}, []RealReg{3}, 0, 3)
+		a := &_allocator{}
+		s := &_state{regsInUse: newRegInUseSet[*mockInstr, *mockBlock, *mockFunction]()}
+		s.regsInUse.add(RealReg(1), &_vrState{v: VReg(2222222)})
+		got := a.findOrSpillAllocatable(s, []RealReg{3}, 0, 3)
 		require.Equal(t, RealReg(3), got)
 	})
 	t.Run("preferred but in use", func(t *testing.T) {
-		s := &state{vrStates: wazevoapi.NewIDedPool[vrState](resetVrState)}
-		s.regsInUse.add(RealReg(3), VReg(1).SetRealReg(3))
-		got := s.findOrSpillAllocatable(&Allocator{}, []RealReg{3, 4}, 0, 3)
+		a := &_allocator{}
+		s := &_state{vrStates: wazevoapi.NewIDedPool[_vrState](_resetVrState)}
+		s.regsInUse.add(RealReg(3), &_vrState{v: VReg(1).SetRealReg(3)})
+		got := a.findOrSpillAllocatable(s, []RealReg{3, 4}, 0, 3)
 		require.Equal(t, RealReg(4), got)
 	})
 	t.Run("preferred but forbidden", func(t *testing.T) {
-		s := &state{vrStates: wazevoapi.NewIDedPool[vrState](resetVrState)}
-		got := s.findOrSpillAllocatable(&Allocator{}, []RealReg{3, 4}, RegSet(0).add(3), 3)
+		a := &_allocator{}
+		s := &_state{vrStates: wazevoapi.NewIDedPool[_vrState](_resetVrState)}
+		got := a.findOrSpillAllocatable(s, []RealReg{3, 4}, RegSet(0).add(3), 3)
 		require.Equal(t, RealReg(4), got)
 	})
 }

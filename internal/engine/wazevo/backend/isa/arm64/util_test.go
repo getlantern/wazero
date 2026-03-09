@@ -10,13 +10,13 @@ import (
 )
 
 func getPendingInstr(m *machine) *instruction {
-	return m.executableContext.PendingInstructions[0]
+	return m.pendingInstructions[0]
 }
 
 func formatEmittedInstructionsInCurrentBlock(m *machine) string {
-	m.executableContext.FlushPendingInstructions()
+	m.FlushPendingInstructions()
 	var strs []string
-	for cur := m.executableContext.PerBlockHead; cur != nil; cur = cur.next {
+	for cur := m.perBlockHead; cur != nil; cur = cur.next {
 		strs = append(strs, cur.String())
 	}
 	return strings.Join(strs, "\n")
@@ -36,6 +36,7 @@ func newSetupWithMockContext() (*mockCompiler, ssa.Builder, *machine) {
 	m := NewBackend().(*machine)
 	m.SetCompiler(ctx)
 	ssaB := ssa.NewBuilder()
+	ctx.ssaBuilder = ssaB
 	blk := ssaB.AllocateBasicBlock()
 	ssaB.SetCurrentBlock(blk)
 	return ctx, ssaB, m
@@ -54,9 +55,10 @@ type mockCompiler struct {
 	currentGID  ssa.InstructionGroupID
 	vRegCounter int
 	vRegMap     map[ssa.Value]regalloc.VReg
-	definitions map[ssa.Value]*backend.SSAValueDefinition
+	definitions map[ssa.Value]backend.SSAValueDefinition
 	sigs        map[ssa.SignatureID]*ssa.Signature
 	typeOf      map[regalloc.VRegID]ssa.Type
+	ssaBuilder  ssa.Builder
 	relocs      []backend.RelocationInfo
 	buf         []byte
 }
@@ -68,7 +70,7 @@ func (m *mockCompiler) GetFunctionABI(sig *ssa.Signature) *backend.FunctionABI {
 	panic("implement me")
 }
 
-func (m *mockCompiler) SSABuilder() ssa.Builder { return nil }
+func (m *mockCompiler) SSABuilder() ssa.Builder { return m.ssaBuilder }
 
 func (m *mockCompiler) LoopNestingForestRoots() []ssa.BasicBlock { panic("TODO") }
 
@@ -76,7 +78,7 @@ func (m *mockCompiler) SourceOffsetInfo() []backend.SourceOffsetInfo { return ni
 
 func (m *mockCompiler) AddSourceOffsetInfo(int64, ssa.SourceOffset) {}
 
-func (m *mockCompiler) AddRelocationInfo(funcRef ssa.FuncRef) {
+func (m *mockCompiler) AddRelocationInfo(funcRef ssa.FuncRef, isTailCall bool) {
 	m.relocs = append(m.relocs, backend.RelocationInfo{FuncRef: funcRef, Offset: int64(len(m.buf))})
 }
 
@@ -106,7 +108,7 @@ func (m *mockCompiler) Init()                                {}
 func newMockCompilationContext() *mockCompiler {
 	return &mockCompiler{
 		vRegMap:     make(map[ssa.Value]regalloc.VReg),
-		definitions: make(map[ssa.Value]*backend.SSAValueDefinition),
+		definitions: make(map[ssa.Value]backend.SSAValueDefinition),
 		typeOf:      map[regalloc.VRegID]ssa.Type{},
 	}
 }
@@ -126,10 +128,10 @@ func (m *mockCompiler) AllocateVReg(typ ssa.Type) regalloc.VReg {
 }
 
 // ValueDefinition implements backend.Compiler.
-func (m *mockCompiler) ValueDefinition(value ssa.Value) *backend.SSAValueDefinition {
+func (m *mockCompiler) ValueDefinition(value ssa.Value) backend.SSAValueDefinition {
 	definition, exists := m.definitions[value]
 	if !exists {
-		return nil
+		return backend.SSAValueDefinition{}
 	}
 	return definition
 }
@@ -144,7 +146,7 @@ func (m *mockCompiler) VRegOf(value ssa.Value) regalloc.VReg {
 }
 
 // MatchInstr implements backend.Compiler.
-func (m *mockCompiler) MatchInstr(def *backend.SSAValueDefinition, opcode ssa.Opcode) bool {
+func (m *mockCompiler) MatchInstr(def backend.SSAValueDefinition, opcode ssa.Opcode) bool {
 	instr := def.Instr
 	return def.IsFromInstr() &&
 		instr.Opcode() == opcode &&
@@ -153,7 +155,7 @@ func (m *mockCompiler) MatchInstr(def *backend.SSAValueDefinition, opcode ssa.Op
 }
 
 // MatchInstrOneOf implements backend.Compiler.
-func (m *mockCompiler) MatchInstrOneOf(def *backend.SSAValueDefinition, opcodes []ssa.Opcode) ssa.Opcode {
+func (m *mockCompiler) MatchInstrOneOf(def backend.SSAValueDefinition, opcodes []ssa.Opcode) ssa.Opcode {
 	for _, opcode := range opcodes {
 		if m.MatchInstr(def, opcode) {
 			return opcode

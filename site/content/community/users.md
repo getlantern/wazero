@@ -25,6 +25,7 @@ considering their efforts before starting your own!
 | [jpegxl][41]     | JPEG XL encoder/decoder based on libjxl                                                              |
 | [jpegli][42]     | JPEG encoder/decoder based on jpegli                                                                 |
 | [webp][43]       | WEBP encoder/decoder based on libwebp                                                                |
+| [go-libtiff][48] | TIFF encoder/decoder based on [libtiff][49], also includes libtiff tools like tiff2pdf               |
 
 ### General purpose plugins
 
@@ -35,6 +36,12 @@ considering their efforts before starting your own!
 | [waPC][5]                      | implements [Apex][6] interfaces with WebAssembly via code generation          |
 | [wazero-emscripten-embind][36] | Emscripten [Embind][37] and code generation support for Wazero                |
 
+### Infrastructure-as-Code
+
+| Name                   | Description                                        |
+|:-----------------------|----------------------------------------------------|
+| [yoke][47] | A WebAssembly-based package deployer for Kubernetes, enabling declarative and programmable deployments with Wasm |
+
 ### Middleware
 
 | Name                   | Description                                        |
@@ -43,11 +50,11 @@ considering their efforts before starting your own!
 
 ### Network
 
-| Name          | Description                                              |
-|:--------------|----------------------------------------------------------|
-| [Benthos][30] | implements 3rd party extension via [WASM processor][31]  |
-| [dapr][15]    | implements 3rd party extension via [WASM middleware][16] |
-| [mosn][9]     | implements 3rd party extension via [proxy-wasm][10]      |
+| Name                   | Description                                                                                          |
+|:-----------------------|------------------------------------------------------------------------------------------------------|
+| [Redpanda Connect][30] | implements 3rd party extension via [WASM processor][31] and [Redpanda Data Transform processor][45]  |
+| [dapr][15]             | implements 3rd party extension via [WASM middleware][16]                                             |
+| [mosn][9]              | implements 3rd party extension via [proxy-wasm][10]                                                  |
 
 ### Security
 
@@ -59,12 +66,13 @@ considering their efforts before starting your own!
 
 ### Cloud Platforms
 
-| Name          | Description                                                               |
-|:--------------|---------------------------------------------------------------------------|
-| [scale][13]   | implements [Polyglot][14] interfaces with WebAssembly via code generation |
-| [taubyte][21] | edge computing and web3 platform that runs [serverless functions][22]     |
-| [YoMo][26]    | Streaming [Serverless][27] Framework for buildnig Geo-distributed system  |
-| [Wetware][28] | Web3's answer to Cloud hosting                                            |
+| Name          | Description                                                                      |
+|:--------------|----------------------------------------------------------------------------------|
+| [Modus][46]   | An open source, serverless framework for building intelligent functions and APIs |
+| [scale][13]   | implements [Polyglot][14] interfaces with WebAssembly via code generation        |
+| [taubyte][21] | edge computing and web3 platform that runs [serverless functions][22]            |
+| [YoMo][26]    | Streaming [Serverless][27] Framework for building Geo-distributed system         |
+| [Wetware][28] | Web3's answer to Cloud hosting                                                   |
 
 ### Database
 
@@ -140,9 +148,9 @@ experience.
 
 [29]: https://github.com/stealthrocket/wazergo
 
-[30]: https://www.benthos.dev/
+[30]: https://docs.redpanda.com/redpanda-connect
 
-[31]: https://www.benthos.dev/docs/components/processors/wasm
+[31]: https://docs.redpanda.com/redpanda-connect/components/processors/wasm/
 
 [32]: https://github.com/stealthrocket/wzprof
 
@@ -169,3 +177,13 @@ experience.
 [43]: https://github.com/gen2brain/webp
 
 [44]: https://github.com/wesql/wescale
+
+[45]: https://docs.redpanda.com/redpanda-connect/components/processors/redpanda_data_transform/
+
+[46]: https://github.com/hypermodeinc/modus
+
+[47]: https://github.com/yokecd/yoke
+
+[48]: https://github.com/klippa-app/go-libtiff
+
+[49]: https://libtiff.gitlab.io/libtiff/

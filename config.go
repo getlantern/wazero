@@ -12,8 +12,6 @@ import (
 
 	"github.com/tetratelabs/wazero/api"
 	experimentalsys "github.com/tetratelabs/wazero/experimental/sys"
-	"github.com/tetratelabs/wazero/internal/engine/interpreter"
-	"github.com/tetratelabs/wazero/internal/engine/wazevo"
 	"github.com/tetratelabs/wazero/internal/filecache"
 	"github.com/tetratelabs/wazero/internal/internalapi"
 	"github.com/tetratelabs/wazero/internal/platform"
@@ -175,7 +173,9 @@ type RuntimeConfig interface {
 // NewRuntimeConfig returns a RuntimeConfig using the compiler if it is supported in this environment,
 // or the interpreter otherwise.
 func NewRuntimeConfig() RuntimeConfig {
-	return newRuntimeConfig()
+	ret := engineLessConfig.clone()
+	ret.engineKind = engineKindAuto
+	return ret
 }
 
 type newEngine func(context.Context, api.CoreFeatures, filecache.Cache) wasm.Engine
@@ -203,7 +203,8 @@ var engineLessConfig = &runtimeConfig{
 type engineKind int
 
 const (
-	engineKindCompiler engineKind = iota
+	engineKindAuto engineKind = iota - 1
+	engineKindCompiler
 	engineKindInterpreter
 	engineKindCount
 )
@@ -234,7 +235,6 @@ const (
 func NewRuntimeConfigCompiler() RuntimeConfig {
 	ret := engineLessConfig.clone()
 	ret.engineKind = engineKindCompiler
-	ret.newEngine = wazevo.NewEngine
 	return ret
 }
 
@@ -242,7 +242,6 @@ func NewRuntimeConfigCompiler() RuntimeConfig {
 func NewRuntimeConfigInterpreter() RuntimeConfig {
 	ret := engineLessConfig.clone()
 	ret.engineKind = engineKindInterpreter
-	ret.newEngine = interpreter.NewEngine
 	return ret
 }
 
@@ -497,7 +496,20 @@ type ModuleConfig interface {
 	WithFSConfig(FSConfig) ModuleConfig
 
 	// WithName configures the module name. Defaults to what was decoded from
-	// the name section. Empty string ("") clears any name.
+	// the name section. Duplicate names are not allowed in a single Runtime.
+	//
+	// Calling this with the empty string "" makes the module anonymous.
+	// That is useful when you want to instantiate the same CompiledModule multiple times like below:
+	//
+	// 	for i := 0; i < N; i++ {
+	//		// Instantiate a new Wasm module from the already compiled `compiledWasm` anonymously without a name.
+	//		instance, err := r.InstantiateModule(ctx, compiledWasm, wazero.NewModuleConfig().WithName(""))
+	//		// ....
+	//	}
+	//
+	// See the `concurrent-instantiation` example for a complete usage.
+	//
+	// Non-empty named modules are available for other modules to import by name.
 	WithName(string) ModuleConfig
 
 	// WithStartFunctions configures the functions to call after the module is

@@ -1,10 +1,12 @@
 package wazevo_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,11 +21,6 @@ import (
 func BenchmarkZig(b *testing.B) {
 	c := wazero.NewRuntimeConfigCompiler()
 	runtBenches(b, context.Background(), c, zigTestCase)
-}
-
-func BenchmarkTinyGo(b *testing.B) {
-	c := wazero.NewRuntimeConfigCompiler()
-	runtBenches(b, context.Background(), c, tinyGoTestCase)
 }
 
 func BenchmarkWasip1(b *testing.B) {
@@ -48,26 +45,6 @@ var (
 			return bin, c, stdout, stderr, err
 		},
 	}
-	tinyGoTestCase = testCase{
-		name: "tinygo",
-		dir:  "testdata/tinygo/",
-		readTestCase: func(fpath string, fname string) (_ []byte, c wazero.ModuleConfig, stdout, stderr *os.File, err error) {
-			if !strings.HasSuffix(fname, ".test") {
-				return nil, nil, nil, nil, nil
-			}
-			bin, err := os.ReadFile(fpath)
-
-			fsconfig := wazero.NewFSConfig().
-				WithDirMount(".", "/").
-				WithDirMount(os.TempDir(), "/tmp")
-
-			c, stdout, stderr = defaultModuleConfig()
-			c = c.WithFSConfig(fsconfig).
-				WithArgs(fname, "-test.v")
-
-			return bin, c, stdout, stderr, err
-		},
-	}
 	wasip1TestCase = testCase{
 		name: "wasip1",
 		dir:  "testdata/go/",
@@ -79,9 +56,15 @@ var (
 			if err != nil {
 				return nil, nil, nil, nil, err
 			}
+			out, err := exec.Command("go", "env", "GOROOT").Output()
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			goroot := string(bytes.TrimRight(out, "\n"))
+
 			fsuffixstripped := strings.ReplaceAll(fname, ".test", "")
 			inferredpath := strings.ReplaceAll(fsuffixstripped, "_", "/")
-			testdir := filepath.Join(runtime.GOROOT(), inferredpath)
+			testdir := filepath.Join(goroot, "src", inferredpath)
 			err = os.Chdir(testdir)
 
 			sysroot := filepath.VolumeName(testdir) + string(os.PathSeparator)
@@ -91,20 +74,37 @@ var (
 			c = c.WithFSConfig(
 				wazero.NewFSConfig().
 					WithDirMount(sysroot, "/")).
-				WithEnv("PWD", normalizedTestdir)
+				WithEnv("PWD", normalizedTestdir).
+				WithEnv("GOWASIRUNTIME", "wazero")
 
 			args := []string{fname, "-test.short", "-test.v"}
 
-			// Skip tests that are fragile on Windows.
-			if runtime.GOOS == "windows" {
-				c = c.
-					WithEnv("GOROOT", normalizeOsPath(runtime.GOROOT()))
-
-				args = append(args,
-					"-test.skip=TestRenameCaseDifference/dir|"+
-						"TestDirFSPathsValid|TestDirFS|TestDevNullFile|"+
-						"TestOpenError|TestSymlinkWithTrailingSlash")
+			// Some distributions of Go such as used by homebrew or GitHub actions do not
+			// contain the LICENSE file in the correct location for these.
+			skip := []string{
+				"TestFileReaddir/sysdir",
+				"TestFileReadDir/sysdir",
+				"TestFileReaddirnames/sysdir",
 			}
+
+			// Skip tests that are fragile on Windows.
+			switch runtime.GOOS {
+			case "darwin":
+				skip = append(skip, "TestRootLinkFrom/symlink", "TestRootLinkFrom/symlink_dotdot_slash",
+					"TestRootLinkFrom/symlink_dotdot_dotdot_slash", "TestRootLinkFrom/symlink_chain",
+					"TestRootLinkFrom/symlink_cycle", "TestRootLinkFrom/relative_symlink",
+					"TestRootLinkFrom/symlink_chain_escapes",
+				)
+			case "windows":
+				c = c.
+					WithEnv("GOROOT", normalizeOsPath(goroot))
+				skip = append(skip, "TestRenameCaseDifference/dir", "TestDirFSPathsValid", "TestDirFS",
+					"TestDevNullFile", "TestOpenError", "TestSymlinkWithTrailingSlash", "TestCopyFS",
+					"TestRoot", "TestOpenInRoot", "ExampleAfterFunc_connection", "TestOpenFileDevNull",
+					"TestOpenFileCreateExclDanglingSymlink",
+				)
+			}
+			args = append(args, "-test.skip="+strings.Join(skip, "|"))
 			c = c.WithArgs(args...)
 
 			return bin, c, stdout, stderr, err
@@ -193,11 +193,15 @@ func requireZeroExitCode(b *testing.B, err error, stdout, stderr *os.File) {
 	b.Helper()
 	if se, ok := err.(*sys.ExitError); ok {
 		if se.ExitCode() != 0 { // Don't err on success.
+			stdout.Seek(0, io.SeekStart)
+			stderr.Seek(0, io.SeekStart)
 			stdoutBytes, _ := io.ReadAll(stdout)
 			stderrBytes, _ := io.ReadAll(stderr)
 			require.NoError(b, err, "stdout: %s\nstderr: %s", string(stdoutBytes), string(stderrBytes))
 		}
 	} else if err != nil {
+		stdout.Seek(0, io.SeekStart)
+		stderr.Seek(0, io.SeekStart)
 		stdoutBytes, _ := io.ReadAll(stdout)
 		stderrBytes, _ := io.ReadAll(stderr)
 		require.NoError(b, err, "stdout: %s\nstderr: %s", string(stdoutBytes), string(stderrBytes))

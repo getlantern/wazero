@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/internal/platform"
 	"github.com/tetratelabs/wazero/internal/testing/require"
 	"github.com/tetratelabs/wazero/internal/wasm"
@@ -16,41 +17,12 @@ import (
 func Test_sharedFunctionsFinalizer(t *testing.T) {
 	sf := &sharedFunctions{}
 
-	b1, err := platform.MmapCodeSegment(100)
+	buf, err := platform.MmapCodeSegment(100)
 	require.NoError(t, err)
-	b2, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b3, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b6, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b7, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b8, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b9, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-	b10, err := platform.MmapCodeSegment(100)
-	require.NoError(t, err)
-
-	sf.memoryGrowExecutable = b1
-	sf.stackGrowExecutable = b2
-	sf.checkModuleExitCode = b3
-	sf.tableGrowExecutable = b6
-	sf.refFuncExecutable = b7
-	sf.memoryWait32Executable = b8
-	sf.memoryWait64Executable = b9
-	sf.memoryNotifyExecutable = b10
+	sf.executable = buf
 
 	sharedFunctionsFinalizer(sf)
-	require.Nil(t, sf.memoryGrowExecutable)
-	require.Nil(t, sf.stackGrowExecutable)
-	require.Nil(t, sf.checkModuleExitCode)
-	require.Nil(t, sf.tableGrowExecutable)
-	require.Nil(t, sf.refFuncExecutable)
-	require.Nil(t, sf.memoryWait32Executable)
-	require.Nil(t, sf.memoryWait64Executable)
-	require.Nil(t, sf.memoryNotifyExecutable)
+	require.Nil(t, sf.executable)
 }
 
 func Test_executablesFinalizer(t *testing.T) {
@@ -74,10 +46,43 @@ func (f fakeFinalizer) setFinalizer(obj interface{}, finalizer interface{}) {
 }
 
 func TestEngine_CompileModule(t *testing.T) {
+	for _, concurrency := range []int{1, 4} {
+		t.Run(fmt.Sprintf("concurrency_%d", concurrency), func(t *testing.T) {
+			ctx := experimental.WithCompilationWorkers(context.Background(), concurrency)
+			e := NewEngine(ctx, 0, nil).(*engine)
+			ff := fakeFinalizer{}
+			e.setFinalizer = ff.setFinalizer
+
+			okModule := &wasm.Module{
+				TypeSection:     []wasm.FunctionType{{}},
+				FunctionSection: []wasm.Index{0, 0, 0, 0},
+				CodeSection: []wasm.Code{
+					{Body: []byte{wasm.OpcodeEnd}},
+					{Body: []byte{wasm.OpcodeEnd}},
+					{Body: []byte{wasm.OpcodeEnd}},
+					{Body: []byte{wasm.OpcodeEnd}},
+				},
+				ID: wasm.ModuleID{},
+			}
+
+			err := e.CompileModule(ctx, okModule, nil, false)
+			require.NoError(t, err)
+
+			// Compiling same module shouldn't be compiled again, but instead should be cached.
+			err = e.CompileModule(ctx, okModule, nil, false)
+			require.NoError(t, err)
+
+			// Pretend the finalizer executed, by invoking them one-by-one.
+			for k, v := range ff {
+				v(k)
+			}
+		})
+	}
+}
+
+func TestEngine_CompileModule_alignment(t *testing.T) {
 	ctx := context.Background()
 	e := NewEngine(ctx, 0, nil).(*engine)
-	ff := fakeFinalizer{}
-	e.setFinalizer = ff.setFinalizer
 
 	okModule := &wasm.Module{
 		TypeSection:     []wasm.FunctionType{{}},
@@ -94,13 +99,29 @@ func TestEngine_CompileModule(t *testing.T) {
 	err := e.CompileModule(ctx, okModule, nil, false)
 	require.NoError(t, err)
 
-	// Compiling same module shouldn't be compiled again, but instead should be cached.
-	err = e.CompileModule(ctx, okModule, nil, false)
-	require.NoError(t, err)
+	cm, ok := e.getCompiledModuleFromMemory(okModule, false)
+	require.True(t, ok)
 
-	// Pretend the finalizer executed, by invoking them one-by-one.
-	for k, v := range ff {
-		v(k)
+	for _, offset := range cm.functionOffsets {
+		require.True(t, offset&15 == 0)
+	}
+
+	for _, ptr := range cm.entryPreamblesPtrs {
+		require.True(t, uintptr(unsafe.Pointer(ptr))&15 == 0)
+	}
+
+	shared := cm.sharedFunctions
+	require.True(t, uintptr(unsafe.Pointer(shared.memoryGrowAddress))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.checkModuleExitCodeAddress))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.stackGrowAddress))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.tableGrowAddress))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.refFuncAddress))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.memoryWait32Address))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.memoryWait64Address))&15 == 0)
+	require.True(t, uintptr(unsafe.Pointer(shared.memoryNotifyAddress))&15 == 0)
+	for _, trampoline := range shared.listenerTrampolines {
+		require.True(t, uintptr(unsafe.Pointer(trampoline.before))&15 == 0)
+		require.True(t, uintptr(unsafe.Pointer(trampoline.after))&15 == 0)
 	}
 }
 
@@ -189,7 +210,7 @@ func TestCompiledModule_functionIndexOf(t *testing.T) {
 	const executableAddr = 0xaaaa
 	var executable []byte
 	{
-		// TODO: use unsafe.Slice after floor version is set to Go 1.20.
+		//nolint:staticcheck
 		hdr := (*reflect.SliceHeader)(unsafe.Pointer(&executable))
 		hdr.Data = executableAddr
 		hdr.Len = 0xffff
@@ -219,4 +240,45 @@ func Test_checkAddrInBytes(t *testing.T) {
 	require.True(t, checkAddrInBytes(end, bytes))
 	require.False(t, checkAddrInBytes(begin-1, bytes))
 	require.False(t, checkAddrInBytes(end+1, bytes))
+}
+
+func TestEngine_WasmModulesShareCompiledModule(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(ctx, 0, nil).(*engine)
+
+	m := &wasm.Module{
+		TypeSection:     []wasm.FunctionType{{}},
+		FunctionSection: []wasm.Index{0},
+		CodeSection: []wasm.Code{
+			{Body: []byte{wasm.OpcodeEnd}},
+		},
+		ID: wasm.ModuleID{},
+	}
+
+	err := e.CompileModule(ctx, m, nil, false)
+	require.NoError(t, err)
+
+	cm1, ok := e.compiledModules[m.ID]
+	require.True(t, ok)
+	require.Equal(t, 1, cm1.refCount)
+
+	err = e.CompileModule(ctx, m, nil, false)
+	require.NoError(t, err)
+	cm2, ok := e.compiledModules[m.ID]
+	require.True(t, ok)
+	require.Equal(t, 2, cm2.refCount)
+	require.Equal(t, cm1, cm2)
+
+	// Closing one of the compiled modules should decrease the ref count
+	// but not remove the compiled module from the engine.
+	e.DeleteCompiledModule(m)
+	cm3, ok := e.compiledModules[m.ID]
+	require.True(t, ok)
+	require.Equal(t, 1, cm3.refCount)
+	require.Equal(t, cm1, cm3)
+
+	// Closing the last compiled module should remove it from the engine.
+	e.DeleteCompiledModule(m)
+	_, ok = e.compiledModules[m.ID]
+	require.False(t, ok)
 }

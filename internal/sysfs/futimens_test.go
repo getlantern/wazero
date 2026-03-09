@@ -22,6 +22,17 @@ func TestUtimens(t *testing.T) {
 	testUtimens(t, false)
 }
 
+func TestFileUtimens(t *testing.T) {
+	testUtimens(t, true)
+
+	testEBADFIfFileClosed(t, func(f sys.File) sys.Errno {
+		return f.Utimens(sys.UTIME_OMIT, sys.UTIME_OMIT)
+	})
+	testEBADFIfDirClosed(t, func(d sys.File) sys.Errno {
+		return d.Utimens(sys.UTIME_OMIT, sys.UTIME_OMIT)
+	})
+}
+
 func testUtimens(t *testing.T, futimes bool) {
 	// Note: This sets microsecond granularity because Windows doesn't support
 	// nanosecond.
