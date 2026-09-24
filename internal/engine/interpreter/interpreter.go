@@ -144,6 +144,12 @@ type callEngine struct {
 	// frames are the function call stack.
 	frames []*callFrame
 
+	// framePool holds frames popped off frames for newFrame to reuse, so a call
+	// does not heap-allocate its frame. Reuse stops once Snapshot has captured
+	// frame pointers that a later Restore expects to be left untouched.
+	framePool    []*callFrame
+	noFrameReuse bool
+
 	// f is the initial function for this call engine.
 	f *function
 
@@ -217,7 +223,23 @@ func (ce *callEngine) popFrame() (frame *callFrame) {
 	oneLess := len(ce.frames) - 1
 	frame = ce.frames[oneLess]
 	ce.frames = ce.frames[:oneLess]
+	if !ce.noFrameReuse {
+		ce.framePool = append(ce.framePool, frame)
+	}
 	return
+}
+
+// newFrame returns a frame for f based at the current stack top, reusing a
+// popped one when available. Callers may still read a frame after popping it,
+// but only until the next newFrame.
+func (ce *callEngine) newFrame(f *function) *callFrame {
+	if n := len(ce.framePool); n > 0 {
+		frame := ce.framePool[n-1]
+		ce.framePool = ce.framePool[:n-1]
+		*frame = callFrame{f: f, base: len(ce.stack)}
+		return frame
+	}
+	return &callFrame{f: f, base: len(ce.stack)}
 }
 
 type callFrame struct {
@@ -271,6 +293,7 @@ type snapshot struct {
 
 // Snapshot implements the same method as documented on experimental.Snapshotter.
 func (ce *callEngine) Snapshot() experimental.Snapshot {
+	ce.noFrameReuse, ce.framePool = true, nil
 	return &snapshot{
 		stack:  slices.Clone(ce.stack),
 		frames: slices.Clone(ce.frames),
@@ -697,7 +720,7 @@ func (ce *callEngine) callGoFunc(ctx context.Context, m *wasm.ModuleInstance, f 
 		lsn.Before(ctx, m, f.definition(), params, &ce.stackIterator)
 		ce.stackIterator.clear()
 	}
-	frame := &callFrame{f: f, base: len(ce.stack)}
+	frame := ce.newFrame(f)
 	ce.pushFrame(frame)
 
 	fn := f.parent.hostFn
@@ -717,7 +740,7 @@ func (ce *callEngine) callGoFunc(ctx context.Context, m *wasm.ModuleInstance, f 
 }
 
 func (ce *callEngine) callNativeFunc(ctx context.Context, m *wasm.ModuleInstance, f *function) {
-	frame := &callFrame{f: f, base: len(ce.stack)}
+	frame := ce.newFrame(f)
 	moduleInst := f.moduleInstance
 	functions := moduleInst.Engine.(*moduleEngine).functions
 	memoryInst := moduleInst.MemoryInstance

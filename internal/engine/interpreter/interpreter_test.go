@@ -40,6 +40,46 @@ func TestInterpreter_CallEngine_PushFrame(t *testing.T) {
 	require.Equal(t, []*callFrame{f1, f2}, ce.frames)
 }
 
+func TestInterpreter_CallEngine_FrameReuse(t *testing.T) {
+	fa, fb := &function{}, &function{}
+	ce := callEngine{stack: []uint64{1, 2}}
+
+	outer := ce.newFrame(fa)
+	ce.pushFrame(outer)
+	inner := ce.newFrame(fb)
+	ce.pushFrame(inner)
+	inner.pc = 7
+
+	require.Equal(t, inner, ce.popFrame())
+	require.Equal(t, []*callFrame{inner}, ce.framePool)
+
+	// A new call reuses the popped frame, reset to describe the new callee.
+	ce.stack = append(ce.stack, 3)
+	reused := ce.newFrame(fa)
+	require.True(t, reused == inner, "expected the popped frame to be reused")
+	require.Equal(t, callFrame{f: fa, base: 3}, *reused)
+	require.Zero(t, len(ce.framePool))
+	require.Equal(t, []*callFrame{outer}, ce.frames)
+}
+
+func TestInterpreter_CallEngine_SnapshotStopsFrameReuse(t *testing.T) {
+	f := &function{}
+	ce := callEngine{}
+	frame := ce.newFrame(f)
+	ce.pushFrame(frame)
+	ce.popFrame()
+	require.Equal(t, 1, len(ce.framePool))
+
+	// Snapshot holds frame pointers that Restore expects untouched, so frames
+	// popped after it must never be handed out again.
+	ce.pushFrame(ce.newFrame(f))
+	_ = ce.Snapshot()
+	require.Zero(t, len(ce.framePool))
+	popped := ce.popFrame()
+	require.Zero(t, len(ce.framePool))
+	require.False(t, ce.newFrame(f) == popped, "frame captured by a snapshot was reused")
+}
+
 func TestInterpreter_CallEngine_PushFrame_StackOverflow(t *testing.T) {
 	saved := callStackCeiling
 	defer func() { callStackCeiling = saved }()
